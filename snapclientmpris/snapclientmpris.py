@@ -21,7 +21,7 @@ from collections.abc import Coroutine
 from os import listdir
 
 import snapcast.control
-from dbus_fast import BusType
+from dbus_fast import BusType, Variant
 from dbus_fast.aio import MessageBus
 
 from snapclientmpris.mpris import (
@@ -60,6 +60,62 @@ def identify_client(server: snapcast.control.Snapserver, macs: list[str]):
     return None
 
 
+# --- Pure state helpers ------------------------------------------------
+def client_stream(
+    server: snapcast.control.Snapserver,
+    client: snapcast.control.Snapclient | None,
+) -> snapcast.control.Snapstream | None:
+    """Resolve the stream currently bound to ``client``.
+
+    python-snapcast >= 2.3.8 exposes ``Snapclient.stream`` directly; on
+    Debian trixie we ship against 2.3.7, where you must walk
+    ``client.group`` -> ``group.stream`` (stream id) -> ``server.stream(id)``.
+    """
+    if client is None:
+        return None
+    g = client.group
+    if g is None:
+        return None
+    return server.stream(g.stream)
+
+
+def playback_status(
+    client: snapcast.control.Snapclient | None,
+    stream: snapcast.control.Snapstream | None,
+) -> str:
+    """Derive the MPRIS PlaybackStatus from client mute + stream state."""
+    if client is None or client.muted:
+        return "Paused"
+    if stream is None or stream.status != "playing":
+        return "Paused"
+    return "Playing"
+
+
+def stream_metadata(
+    host: str, stream: snapcast.control.Snapstream | None
+) -> dict | None:
+    """Compute the MPRIS Metadata dict for ``stream``, or ``None`` if there
+    is no stream — callers should leave existing metadata in place rather
+    than clearing it in that case.
+
+    Adds two ``snapcast:`` namespaced custom keys (MPRIS spec explicitly
+    allows player-specific keys in Metadata): ``snapcast:stream`` is the
+    snapserver stream identifier (e.g. ``SpotifyHD`` / ``MPD``), and
+    ``snapcast:streamStatus`` is the raw snapserver stream status
+    (``playing`` / ``idle`` / ...). Together they let an observer
+    distinguish, for instance, an attached-but-idle MPD source from a
+    SpotifyHD source actually producing audio — info that doesn't
+    survive the MPRIS PlaybackStatus mapping.
+    """
+    if stream is None:
+        return None
+    url = f"snapcast://{host}/{stream.identifier}"
+    md = translate_snapserver_metadata(stream.metadata or {}, snapcast_url=url)
+    md["snapcast:stream"] = Variant("s", stream.identifier)
+    md["snapcast:streamStatus"] = Variant("s", str(stream.status or ""))
+    return md
+
+
 # --- Daemon ------------------------------------------------------------
 async def run(host: str, control_port: int, bus_type: BusType) -> None:
     loop = asyncio.get_running_loop()
@@ -81,38 +137,17 @@ async def run(host: str, control_port: int, bus_type: BusType) -> None:
         logger.warning("local MAC %s not in snapserver roster; controls and "
                        "metadata will be inert until snapclient registers", macs)
 
-    def client_stream() -> snapcast.control.Snapstream | None:
-        # python-snapcast >= 2.3.8 exposes Snapclient.stream directly; on
-        # Debian trixie we ship against 2.3.7, where you must walk
-        # client.group -> group.stream (stream id) -> server.stream(id).
-        if client is None:
-            return None
-        g = client.group
-        if g is None:
-            return None
-        return server.stream(g.stream)
-
-    # MPRIS — derive playback state from snapserver-side mute + stream status.
-    def current_status() -> str:
-        if client is None or client.muted:
-            return "Paused"
-        s = client_stream()
-        if s is None or s.status != "playing":
-            return "Paused"
-        return "Playing"
-
     def refresh() -> None:
         if client is None:
             return
-        s = client_stream()
+        s = client_stream(server, client)
         logger.debug("refresh: client.volume=%s muted=%s stream=%s",
                      client.volume, client.muted,
                      s.identifier if s is not None else None)
-        if s is not None:
-            url = f"snapcast://{host}/{s.identifier}"
-            md = translate_snapserver_metadata(s.metadata or {}, snapcast_url=url)
+        md = stream_metadata(host, s)
+        if md is not None:
             player.update_metadata(md)
-        player.update_playback_status(current_status())
+        player.update_playback_status(playback_status(client, s))
         if client.volume is not None:
             player.update_volume(client.volume / 100.0)
 
