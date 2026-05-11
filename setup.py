@@ -61,7 +61,7 @@ setup(
         "Programming Language :: Python :: 3",
         "Operating System :: POSIX :: Linux",
     ],
-    python_requires=">=3.9",
+    python_requires=">=3.11",
     install_requires=[
         "snapcast>=2.3",
         "dbus-fast>=2.0",

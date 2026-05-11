@@ -1,0 +1,31 @@
+snapclientmpris (1.1.0) unstable; urgency=medium
+
+  * Initial Debian packaging for the b0bbywan APT repository, forked
+    from hifiberry/snapcastmpris.
+  * Rename the package from snapcastmpris to snapclientmpris: the daemon
+    sits on the snapclient side (exposes MPRIS for local playback,
+    pulled in alongside snapclient.service) and talks to the snapserver
+    over JSON-RPC to drive the stream source.
+  * Rewrite the daemon around asyncio: replace the bespoke JSON-RPC /
+    websocket / dbus-python / GLib stack with python-snapcast and
+    dbus-fast. Single event loop, no threads. ~50% less code.
+  * Pick up track metadata (title / artist / album / artUrl) from
+    Stream.OnProperties and surface them as MPRIS xesam:* / mpris:*
+    keys, so MPRIS clients show the currently playing track.
+  * Seed playback state and metadata from Server.GetStatus at startup
+    instead of waiting for the first event.
+  * Add dbus-bus config key (system|session, defaults to system to match
+    upstream hifiberry behaviour) so the bridge can also run as a user
+    systemd unit on the session bus.
+  * Resolve config from XDG paths with /etc as fallback; built-in
+    defaults otherwise.
+  * Ship both a user and a system systemd unit (neither auto-enabled)
+    so the package can be deployed either as a per-user MPRIS bridge or
+    as a system service matching the upstream hifiberry deployment.
+  * Ship an example config template under /usr/share/.
+  * Drop the ALSA volume sync (-s / -m flags) and the hifiberry-specific
+    pause-all helper; those were tied to the original hifiberry
+    deployment and don't fit the Odio target.
+  * Bump Python requirement to 3.11.
+
+ -- Mathieu Réquillart <mathieu.requillart@gmail.com>  Mon, 11 May 2026 17:00:00 +0000
