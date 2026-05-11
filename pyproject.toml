@@ -1,0 +1,9 @@
+[tool.ruff]
+line-length = 120
+target-version = "py37"
+
+[tool.ruff.lint]
+# Start with pyflakes rules only; these catch real bugs (undefined names,
+# unused imports, etc.) without flooding the report with style issues from
+# the inherited upstream code.
+select = ["F"]
