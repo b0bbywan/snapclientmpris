@@ -36,6 +36,11 @@ version = {attr = "snapclientmpris.__version__"}
 include = ["snapclientmpris*"]
 exclude = ["tests*"]
 
+[tool.pytest.ini_options]
+# Add the repo root so `pytest -q` (not via `python -m pytest`) can
+# still import the snapclientmpris package without an editable install.
+pythonpath = ["."]
+
 [tool.ruff]
 line-length = 120
 target-version = "py311"

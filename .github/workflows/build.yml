@@ -30,6 +30,9 @@ jobs:
       - name: mypy
         if: always()
         run: make lint-mypy
+      - name: Pytest
+        if: always()
+        run: make test
 
   deb:
     runs-on: ubuntu-latest
