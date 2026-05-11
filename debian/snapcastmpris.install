@@ -1,0 +1,3 @@
+data/user/snapcastmpris.service usr/lib/systemd/user/
+data/system/snapcastmpris.service usr/lib/systemd/system/
+data/snapcastmpris.conf usr/share/snapcastmpris/

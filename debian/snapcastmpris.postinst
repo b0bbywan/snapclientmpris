@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+#DEBHELPER#
+# Neither service is auto-enabled. Pick one of:
+#
+# 1) System mode (default, matches upstream hifiberry behaviour, runs as root):
+#      cp /usr/share/snapcastmpris/snapcastmpris.conf /etc/snapcastmpris.conf
+#      # edit /etc/snapcastmpris.conf
+#      systemctl daemon-reload
+#      systemctl enable --now snapcastmpris.service
+#
+# 2) User mode (session bus):
+#      mkdir -p ~/.config/snapcastmpris
+#      cp /usr/share/snapcastmpris/snapcastmpris.conf ~/.config/snapcastmpris/
+#      sed -i 's/^dbus-bus = system/dbus-bus = session/' \
+#        ~/.config/snapcastmpris/snapcastmpris.conf
+#      systemctl --user daemon-reload
+#      systemctl --user enable --now snapcastmpris.service

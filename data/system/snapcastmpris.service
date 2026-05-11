@@ -1,0 +1,13 @@
+[Unit]
+Description=Snapcast MPRIS2 bridge (system instance)
+After=network-online.target dbus.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/snapcastmpris
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

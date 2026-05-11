@@ -1,0 +1,88 @@
+name: Build
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential debhelper dh-python \
+            python3 python3-setuptools devscripts fakeroot
+
+      - name: Sync changelog with tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          DEBFULLNAME: GitHub Actions
+          DEBEMAIL: actions@github.com
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          # Map pre-release suffixes to a Debian-sortable form: -rcN/-betaN/-alphaN
+          # would sort ABOVE the final version (treated as a Debian revision),
+          # so rewrite them to ~rcN/~betaN/~alphaN which sort below.
+          TAG="$(echo "$TAG" | sed -E 's/-(rc|beta|alpha)/~\1/')"
+          CL="$(dpkg-parsechangelog -S Version)"
+          if [ "$TAG" != "$CL" ]; then
+            # -b: allow the new version to sort below the current one, which
+            # happens when tagging a prerelease (e.g. CL=1.0.1, TAG=1.0.1~rc.1)
+            dch -b --newversion "$TAG" --distribution unstable --urgency medium \
+              "Release $TAG"
+          fi
+
+      - name: Build .deb
+        run: dpkg-buildpackage -b -us -uc
+
+      - name: Collect .deb
+        run: |
+          mkdir -p dist
+          mv ../snapcastmpris_*.deb dist/
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: snapcastmpris-deb
+          path: dist/*.deb
+          if-no-files-found: error
+
+  release:
+    needs: deb
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: snapcastmpris-deb
+          path: dist/
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.deb
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+
+  notify-apt-repo:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.APT_REPO_TOKEN }}
+          repository: b0bbywan/odio-apt-repo
+          event-type: release-published
+          client-payload: '{"repo": "${{ github.repository }}", "tag": "${{ github.ref_name }}"}'
