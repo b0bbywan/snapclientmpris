@@ -27,6 +27,9 @@ jobs:
       - name: ruff
         if: always()
         run: make lint-ruff
+      - name: mypy
+        if: always()
+        run: make lint-mypy
 
   deb:
     runs-on: ubuntu-latest
