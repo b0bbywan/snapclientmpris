@@ -1,0 +1,13 @@
+[Unit]
+Description=Snapcast MPRIS2 bridge
+After=network-online.target snapclient.service
+Wants=network-online.target snapclient.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/snapclientmpris
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
