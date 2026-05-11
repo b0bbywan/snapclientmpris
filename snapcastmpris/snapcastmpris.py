@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 # (License and author information as in the original script)
 
+import os
 import sys
 import logging
 import time
@@ -37,15 +38,30 @@ def pause_snapcast(signalNumber, frame):
         snapcast_wrapper.pause_playback()
 
 
+CONFIG_PATHS = [
+    os.path.join(
+        os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+        "snapcastmpris",
+        "snapcastmpris.conf",
+    ),
+    "/etc/snapcastmpris.conf",
+]
+
+
 def read_config():
     config = configparser.ConfigParser()
-    try:
-        with open("/etc/snapcastmpris.conf") as f:
-            config.read_string("[snapcast]\n" + f.read())
-        logging.info("read /etc/snapcastmpris.conf")
-    except Exception:
-        logging.info("can't read /etc/snapcastmpris.conf, using default configurations")
-
+    for path in CONFIG_PATHS:
+        try:
+            with open(path) as f:
+                config.read_string("[snapcast]\n" + f.read())
+            logging.info("read %s", path)
+            return config
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            logging.warning("failed to read %s: %s", path, e)
+            continue
+    logging.info("no config file found in %s, using defaults", CONFIG_PATHS)
     return config
 
 
