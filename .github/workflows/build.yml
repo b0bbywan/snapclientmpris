@@ -24,6 +24,9 @@ jobs:
       - name: Check tag matches __init__.py
         if: startsWith(github.ref, 'refs/tags/v')
         run: make check-tag
+      - name: ruff
+        if: always()
+        run: make lint-ruff
 
   deb:
     runs-on: ubuntu-latest
