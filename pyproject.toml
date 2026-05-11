@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "snapclientmpris"
+description = "Snapcast MPRIS bridge"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Mathieu Réquillart", email = "mathieu.requillart@gmail.com"}]
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: POSIX :: Linux",
+]
+dependencies = [
+    "snapcast>=2.3",
+    "dbus-fast>=2.0",
+    "zeroconf>=0.28",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+dev = ["pytest", "mypy", "ruff"]
+
+[project.scripts]
+snapclientmpris = "snapclientmpris.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/b0bbywan/snapclientmpris"
+
+[tool.setuptools.dynamic]
+version = {attr = "snapclientmpris.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["snapclientmpris*"]
+exclude = ["tests*"]

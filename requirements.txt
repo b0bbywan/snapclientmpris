@@ -1,6 +1,0 @@
-requests==2.*
-websocket-client>=0.57
-zeroconf>=0.28
-pyalsaaudio
-dbus-python
-pygobject
