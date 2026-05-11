@@ -20,13 +20,13 @@ class SnapcastWrapper(threading.Thread, SnapcastRpcListener):
     """ Wrapper to handle snapclient
     """
 
-    def __init__(self, glib_loop, server_address: str, sync_volume=False, alsa_mixer='Softvol'):
+    def __init__(self, glib_loop, server_address: str, bus, sync_volume=False, alsa_mixer='Softvol'):
         super().__init__()
         self.name = "SnapcastWrapper"
         self.keep_running = True
         self.server_address = server_address
 
-        self.dbus_service = SnapcastMPRISInterface(self, glib_loop)
+        self.dbus_service = SnapcastMPRISInterface(self, glib_loop, bus)
 
         self.playback_status = PLAYBACK_STOPPED
         self.metadata = {}

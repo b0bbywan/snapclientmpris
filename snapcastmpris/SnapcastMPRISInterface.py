@@ -128,13 +128,12 @@ class SnapcastMPRISInterface(dbus.service.Object):
       </interface>
     </node>"""
 
-    def __init__(self, wrapper_instance, glib_loop):
-        dbus.service.Object.__init__(self, dbus.SystemBus(),
-                                     SnapcastMPRISInterface.PATH)
+    def __init__(self, wrapper_instance, glib_loop, bus):
+        dbus.service.Object.__init__(self, bus, SnapcastMPRISInterface.PATH)
         self.name = "org.mpris.MediaPlayer2.snapcast"
         self.wrapper_instance = wrapper_instance
         self.glib_loop = glib_loop
-        self.bus = dbus.SystemBus()
+        self.bus = bus
         self.uname = self.bus.get_unique_name()
         self.dbus_obj = self.bus.get_object("org.freedesktop.DBus",
                                             "/org/freedesktop/DBus")
