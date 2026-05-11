@@ -156,6 +156,9 @@ async def run(host: str, control_port: int, bus_type: BusType) -> None:
         if client is None:
             return
         s = client_stream()
+        logger.debug("refresh: client.volume=%s muted=%s stream=%s",
+                     client.volume, client.muted,
+                     s.identifier if s is not None else None)
         if s is not None:
             url = f"snapcast://{host}/{s.identifier}"
             md = translate_snapserver_metadata(s.metadata or {}, snapcast_url=url)
