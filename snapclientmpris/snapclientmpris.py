@@ -33,6 +33,7 @@ from snapclientmpris.mpris import (
     ROOT_PATH,
     MediaPlayer2,
     MediaPlayer2Player,
+    snapserver_to_playback_status,
     translate_snapserver_metadata,
 )
 
@@ -130,18 +131,6 @@ def client_stream(
     return server.stream(g.stream)
 
 
-def playback_status(
-    client: snapcast.control.Snapclient | None,
-    stream: snapcast.control.Snapstream | None,
-) -> str:
-    """Derive the MPRIS PlaybackStatus from client mute + stream state."""
-    if client is None or client.muted:
-        return "Paused"
-    if stream is None or stream.status != "playing":
-        return "Paused"
-    return "Playing"
-
-
 def stream_metadata(
     host: str, stream: snapcast.control.Snapstream | None
 ) -> dict | None:
@@ -152,6 +141,57 @@ def stream_metadata(
         return None
     url = f"snapcast://{host}/{stream.identifier}"
     return translate_snapserver_metadata(stream.metadata or {}, snapcast_url=url)
+
+
+def stream_capabilities(stream: snapcast.control.Snapstream | None) -> dict:
+    """Extract MPRIS-relevant capability flags from ``stream.properties``.
+
+    Snapserver streams report ``canPlay`` / ``canPause`` / ``canGoNext`` /
+    ``canGoPrevious`` / ``canSeek`` / ``canControl`` in ``stream.properties``;
+    we mirror them to the matching MPRIS ``Can*`` properties so clients
+    (gnome-music, KDE plasma, playerctl) only enable the buttons the source
+    actually supports.
+    """
+    caps = {
+        "CanPlay": False,
+        "CanPause": False,
+        "CanGoNext": False,
+        "CanGoPrevious": False,
+        "CanSeek": False,
+        "CanControl": False,
+    }
+    if stream is None:
+        return caps
+    p = stream.properties or {}
+    caps["CanPlay"] = bool(p.get("canPlay", False))
+    caps["CanPause"] = bool(p.get("canPause", False))
+    caps["CanGoNext"] = bool(p.get("canGoNext", False))
+    caps["CanGoPrevious"] = bool(p.get("canGoPrevious", False))
+    caps["CanSeek"] = bool(p.get("canSeek", False))
+    caps["CanControl"] = bool(p.get("canControl", False))
+    return caps
+
+
+async def control_stream(
+    server: snapcast.control.Snapserver,
+    stream: snapcast.control.Snapstream | None,
+    command: str,
+) -> None:
+    """Forward an MPRIS-style command to the snapserver stream's source.
+
+    Snapserver's ``Stream.Control`` JSON-RPC method relays commands
+    (``play``, ``pause``, ``playPause``, ``stop``, ``next``, ``previous``,
+    ``seek``, ``setPosition``) to the source process. No-op when there is
+    no stream bound or the stream reports ``canControl=false``.
+    """
+    if stream is None:
+        return
+    props = stream.properties or {}
+    if not props.get("canControl", False):
+        logger.debug("control_stream: %s ignored (canControl=False)", command)
+        return
+    logger.debug("control_stream: %s -> %s", command, stream.identifier)
+    await server.stream_control(stream.identifier, command, {})
 
 
 # --- Daemon ------------------------------------------------------------
@@ -179,13 +219,17 @@ async def run(host: str, control_port: int, bus_type: BusType) -> None:
         if client is None:
             return
         s = client_stream(server, client)
-        logger.debug("refresh: client.volume=%s muted=%s stream=%s",
-                     client.volume, client.muted,
-                     s.identifier if s is not None else None)
+        logger.debug("refresh: client.volume=%s stream=%s status=%s",
+                     client.volume,
+                     s.identifier if s is not None else None,
+                     s.status if s is not None else None)
         md = stream_metadata(host, s)
         if md is not None:
             player.update_metadata(md)
-        player.update_playback_status(playback_status(client, s))
+        player.update_playback_status(
+            snapserver_to_playback_status(s.status if s is not None else None)
+        )
+        player.update_capabilities(stream_capabilities(s))
         if client.volume is not None:
             player.update_volume(client.volume / 100.0)
 
@@ -198,38 +242,30 @@ async def run(host: str, control_port: int, bus_type: BusType) -> None:
         bg_tasks.add(task)
         task.add_done_callback(bg_tasks.discard)
 
-    async def set_muted(muted: bool) -> None:
-        if client is None:
-            return
-        await client.set_muted(muted)
-        refresh()
-
     async def set_volume(percent: int) -> None:
         if client is None:
             return
         await client.set_volume(percent)
         refresh()
 
-    def play() -> None:
-        schedule(set_muted(False))
-
-    def pause() -> None:
-        schedule(set_muted(True))
-
-    def play_pause() -> None:
-        if client is None:
-            return
-        schedule(set_muted(not client.muted))
+    def control(command: str) -> None:
+        # Delegates MPRIS playback commands to the snapserver stream's
+        # source (Spotifyd / Librespot / etc.) via Stream.Control. With
+        # multiple snapclients on the same stream, this affects every
+        # listener — that's the intended multi-room semantic.
+        schedule(control_stream(server, client_stream(server, client), command))
 
     def on_volume_set(v: float) -> None:
         # MPRIS Volume is a float 0.0-1.0; snapserver expects 0-100 int.
         schedule(set_volume(int(round(v * 100))))
 
     player = MediaPlayer2Player(
-        on_play=play,
-        on_pause=pause,
-        on_play_pause=play_pause,
-        on_stop=pause,  # streaming workflow: Stop is treated as Pause
+        on_play=lambda: control("play"),
+        on_pause=lambda: control("pause"),
+        on_play_pause=lambda: control("playPause"),
+        on_stop=lambda: control("stop"),
+        on_next=lambda: control("next"),
+        on_previous=lambda: control("previous"),
         on_volume_set=on_volume_set,
     )
 
@@ -248,9 +284,11 @@ async def run(host: str, control_port: int, bus_type: BusType) -> None:
 
     refresh()  # seed
 
-    # SIGUSR1 → pause, SIGUSR2 → stop (= pause). Matches upstream contract.
-    loop.add_signal_handler(signal.SIGUSR1, pause)
-    loop.add_signal_handler(signal.SIGUSR2, pause)
+    # SIGUSR1 → pause, SIGUSR2 → stop. Matches the upstream signal contract;
+    # both are now forwarded to the snapserver stream's source rather than
+    # toggling local mute.
+    loop.add_signal_handler(signal.SIGUSR1, lambda: control("pause"))
+    loop.add_signal_handler(signal.SIGUSR2, lambda: control("stop"))
 
     stop_event = asyncio.Event()
     loop.add_signal_handler(signal.SIGTERM, stop_event.set)

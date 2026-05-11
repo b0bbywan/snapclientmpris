@@ -72,6 +72,16 @@ class MediaPlayer2(ServiceInterface):
         return []
 
 
+_CAP_ATTRS = {
+    "CanPlay": "_can_play",
+    "CanPause": "_can_pause",
+    "CanGoNext": "_can_go_next",
+    "CanGoPrevious": "_can_go_previous",
+    "CanSeek": "_can_seek",
+    "CanControl": "_can_control",
+}
+
+
 class MediaPlayer2Player(ServiceInterface):
     """Player MPRIS interface — playback state and controls."""
 
@@ -81,16 +91,32 @@ class MediaPlayer2Player(ServiceInterface):
         on_pause: Callable[[], None] | None = None,
         on_play_pause: Callable[[], None] | None = None,
         on_stop: Callable[[], None] | None = None,
+        on_next: Callable[[], None] | None = None,
+        on_previous: Callable[[], None] | None = None,
         on_volume_set: Callable[[float], None] | None = None,
     ) -> None:
         super().__init__("org.mpris.MediaPlayer2.Player")
         self._playback_status = "Stopped"
         self._metadata: dict = {}
         self._volume = 1.0
+        # Capabilities default to False — they're filled in from the
+        # snapserver stream's properties on the first refresh().
+        self._can_play = False
+        self._can_pause = False
+        self._can_go_next = False
+        self._can_go_previous = False
+        self._can_seek = False
+        # CanControl mirrors the source's ability to receive MPRIS
+        # control commands; per MPRIS this should also gate the Volume
+        # setter, but we deliberately leave volume control wired because
+        # snapcast volume is per-client, not per-stream.
+        self._can_control = False
         self._on_play = on_play
         self._on_pause = on_pause
         self._on_play_pause = on_play_pause
         self._on_stop = on_stop
+        self._on_next = on_next
+        self._on_previous = on_previous
         self._on_volume_set = on_volume_set
 
     # --- MPRIS methods ------------------------------------------------
@@ -120,11 +146,15 @@ class MediaPlayer2Player(ServiceInterface):
 
     @method()
     def Next(self):
-        pass
+        logger.debug("MPRIS Next")
+        if self._on_next:
+            self._on_next()
 
     @method()
     def Previous(self):
-        pass
+        logger.debug("MPRIS Previous")
+        if self._on_previous:
+            self._on_previous()
 
     @method()
     def Seek(self, Offset: "x"):  # noqa: N803, ARG002
@@ -165,27 +195,27 @@ class MediaPlayer2Player(ServiceInterface):
 
     @dbus_property(access=PropertyAccess.READ)
     def CanGoNext(self) -> "b":
-        return False
+        return self._can_go_next
 
     @dbus_property(access=PropertyAccess.READ)
     def CanGoPrevious(self) -> "b":
-        return False
+        return self._can_go_previous
 
     @dbus_property(access=PropertyAccess.READ)
     def CanPlay(self) -> "b":
-        return True
+        return self._can_play
 
     @dbus_property(access=PropertyAccess.READ)
     def CanPause(self) -> "b":
-        return True
+        return self._can_pause
 
     @dbus_property(access=PropertyAccess.READ)
     def CanSeek(self) -> "b":
-        return False
+        return self._can_seek
 
     @dbus_property(access=PropertyAccess.READ)
     def CanControl(self) -> "b":
-        return True
+        return self._can_control
 
     @dbus_property()
     def Volume(self) -> "d":
@@ -226,6 +256,26 @@ class MediaPlayer2Player(ServiceInterface):
         """Replace Metadata and notify subscribers."""
         self._metadata = metadata
         self.emit_properties_changed({"Metadata": metadata})
+
+    def update_capabilities(self, caps: dict) -> None:
+        """Update the Can* flags from external state (snapserver stream
+        properties) and emit PropertiesChanged for any that changed.
+
+        ``caps`` is a dict keyed by MPRIS property name, e.g.
+        ``{"CanPlay": True, "CanPause": True, "CanGoNext": False, ...}``.
+        Unknown keys are silently ignored.
+        """
+        changed: dict = {}
+        for key, val in caps.items():
+            attr = _CAP_ATTRS.get(key)
+            if attr is None:
+                continue
+            if getattr(self, attr) != val:
+                setattr(self, attr, val)
+                changed[key] = val
+        if changed:
+            logger.debug("update_capabilities: %s", changed)
+            self.emit_properties_changed(changed)
 
     def update_volume(self, volume: float) -> None:
         """Set Volume from external state (e.g. snapserver event)."""
