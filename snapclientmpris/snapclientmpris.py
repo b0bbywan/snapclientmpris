@@ -75,7 +75,7 @@ def discover_snapserver() -> str | None:
             "Snapcast._snapcast._tcp.local.",
             timeout=3000,
         )
-        if info is None:
+        if info is None or info.port is None:
             return None
         for addr in info.parsed_addresses(IPVersion.V4Only):
             if addr != "0.0.0.0":
@@ -102,7 +102,9 @@ def local_mac_addresses() -> list[str]:
     return macs
 
 
-def identify_client(server: snapcast.control.Snapserver, macs: list[str]):
+def identify_client(
+    server: snapcast.control.Snapserver, macs: list[str]
+) -> snapcast.control.Snapclient | None:
     """Locate this host's Snapclient in ``server.clients`` by MAC."""
     for client in server.clients:
         if client.identifier in macs:
