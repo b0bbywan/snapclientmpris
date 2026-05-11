@@ -1,0 +1,22 @@
+#!/bin/sh
+set -e
+#DEBHELPER#
+# This package only provides the MPRIS bridge daemon. The audio player
+# itself is shipped by the snapclient package (Depends:) and runs as
+# snapclient.service; the bridge units pull it in via Wants= so you only
+# need to enable the bridge.
+#
+# Neither bridge unit is auto-enabled. Pick one of:
+#
+# 1) User mode (default, session bus):
+#      mkdir -p ~/.config/snapclientmpris
+#      cp /usr/share/snapclientmpris/snapclientmpris.conf ~/.config/snapclientmpris/
+#      # edit ~/.config/snapclientmpris/snapclientmpris.conf
+#      systemctl --user daemon-reload
+#      systemctl --user enable --now snapclientmpris.service
+#
+# 2) System mode (legacy hifiberry-style, runs as _snapclient on the system bus):
+#      cp /usr/share/snapclientmpris/snapclientmpris.conf /etc/snapclientmpris.conf
+#      sed -i 's/^dbus-bus = session/dbus-bus = system/' /etc/snapclientmpris.conf
+#      systemctl daemon-reload
+#      systemctl enable --now snapclientmpris.service
