@@ -72,6 +72,15 @@ class MediaPlayer2(ServiceInterface):
         return []
 
 
+_CAP_ATTRS = {
+    "CanPlay": "_can_play",
+    "CanPause": "_can_pause",
+    "CanGoNext": "_can_go_next",
+    "CanGoPrevious": "_can_go_previous",
+    "CanSeek": "_can_seek",
+}
+
+
 class MediaPlayer2Player(ServiceInterface):
     """Player MPRIS interface — playback state and controls."""
 
@@ -81,16 +90,27 @@ class MediaPlayer2Player(ServiceInterface):
         on_pause: Callable[[], None] | None = None,
         on_play_pause: Callable[[], None] | None = None,
         on_stop: Callable[[], None] | None = None,
+        on_next: Callable[[], None] | None = None,
+        on_previous: Callable[[], None] | None = None,
         on_volume_set: Callable[[float], None] | None = None,
     ) -> None:
         super().__init__("org.mpris.MediaPlayer2.Player")
         self._playback_status = "Stopped"
         self._metadata: dict = {}
         self._volume = 1.0
+        # Capabilities default to False — they're filled in from the
+        # snapserver stream's properties on the first refresh().
+        self._can_play = False
+        self._can_pause = False
+        self._can_go_next = False
+        self._can_go_previous = False
+        self._can_seek = False
         self._on_play = on_play
         self._on_pause = on_pause
         self._on_play_pause = on_play_pause
         self._on_stop = on_stop
+        self._on_next = on_next
+        self._on_previous = on_previous
         self._on_volume_set = on_volume_set
 
     # --- MPRIS methods ------------------------------------------------
@@ -120,11 +140,15 @@ class MediaPlayer2Player(ServiceInterface):
 
     @method()
     def Next(self):
-        pass
+        logger.debug("MPRIS Next")
+        if self._on_next:
+            self._on_next()
 
     @method()
     def Previous(self):
-        pass
+        logger.debug("MPRIS Previous")
+        if self._on_previous:
+            self._on_previous()
 
     @method()
     def Seek(self, Offset: "x"):  # noqa: N803, ARG002
@@ -165,26 +189,34 @@ class MediaPlayer2Player(ServiceInterface):
 
     @dbus_property(access=PropertyAccess.READ)
     def CanGoNext(self) -> "b":
-        return False
+        return self._can_go_next
 
     @dbus_property(access=PropertyAccess.READ)
     def CanGoPrevious(self) -> "b":
-        return False
+        return self._can_go_previous
 
     @dbus_property(access=PropertyAccess.READ)
     def CanPlay(self) -> "b":
-        return True
+        return self._can_play
 
     @dbus_property(access=PropertyAccess.READ)
     def CanPause(self) -> "b":
-        return True
+        return self._can_pause
 
     @dbus_property(access=PropertyAccess.READ)
     def CanSeek(self) -> "b":
-        return False
+        return self._can_seek
 
     @dbus_property(access=PropertyAccess.READ)
     def CanControl(self) -> "b":
+        # Hardcoded True even when the source has canControl=false in
+        # its snapserver stream.properties: MPRIS clients refuse to set
+        # Volume when CanControl=False (per spec), but snapcast volume
+        # is per-client and we want it controllable regardless of the
+        # stream source's own controllability. Backends that need the
+        # truth can read the per-operation Can* flags (which are
+        # mirrored from the stream) or the snapcast:streamStatus
+        # Metadata key.
         return True
 
     @dbus_property()
@@ -226,6 +258,26 @@ class MediaPlayer2Player(ServiceInterface):
         """Replace Metadata and notify subscribers."""
         self._metadata = metadata
         self.emit_properties_changed({"Metadata": metadata})
+
+    def update_capabilities(self, caps: dict) -> None:
+        """Update the Can* flags from external state (snapserver stream
+        properties) and emit PropertiesChanged for any that changed.
+
+        ``caps`` is a dict keyed by MPRIS property name, e.g.
+        ``{"CanPlay": True, "CanPause": True, "CanGoNext": False, ...}``.
+        Unknown keys are silently ignored.
+        """
+        changed: dict = {}
+        for key, val in caps.items():
+            attr = _CAP_ATTRS.get(key)
+            if attr is None:
+                continue
+            if getattr(self, attr) != val:
+                setattr(self, attr, val)
+                changed[key] = val
+        if changed:
+            logger.debug("update_capabilities: %s", changed)
+            self.emit_properties_changed(changed)
 
     def update_volume(self, volume: float) -> None:
         """Set Volume from external state (e.g. snapserver event)."""
@@ -294,9 +346,19 @@ def translate_snapserver_metadata(snap_md: dict, snapcast_url: str | None = None
     return out
 
 
-def snapserver_to_playback_status(stream_status: str | None) -> str:
-    """Map a snapserver stream.status string to an MPRIS PlaybackStatus."""
+def snapserver_to_playback_status(status: str | None) -> str:
+    """Map a state string to an MPRIS PlaybackStatus.
+
+    Accepts both snapserver's ``stream.status`` (``playing`` / ``idle``)
+    and the explicit MPRIS states a source reports via
+    ``stream.properties.playbackStatus`` (``playing`` / ``paused`` /
+    ``stopped``). An idle stream maps to Stopped — Paused only applies
+    when the source explicitly says so, because an idle snapserver
+    stream means "no audio flowing", not "track is paused mid-play".
+    """
     return {
         "playing": "Playing",
-        "idle": "Paused",
-    }.get(stream_status or "", "Stopped")
+        "paused": "Paused",
+        "stopped": "Stopped",
+        "idle": "Stopped",
+    }.get((status or "").lower(), "Stopped")
