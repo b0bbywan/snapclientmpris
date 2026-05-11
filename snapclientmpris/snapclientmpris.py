@@ -55,7 +55,9 @@ def local_mac_addresses() -> list[str]:
     return macs
 
 
-def identify_client(server: snapcast.control.Snapserver, macs: list[str]):
+def identify_client(
+    server: snapcast.control.Snapserver, macs: list[str]
+) -> snapcast.control.Snapclient | None:
     """Locate this host's Snapclient in ``server.clients`` by MAC."""
     for client in server.clients:
         if client.identifier in macs:
