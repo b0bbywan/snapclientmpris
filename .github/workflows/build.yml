@@ -1,0 +1,96 @@
+name: Build
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install runtime + dev deps
+        run: pip install -e .[dev]
+      # Fail fast on a tag that doesn't match snapclientmpris/__init__.py,
+      # before the deb job (and the rest of the matrix) burns minutes.
+      - name: Check tag matches __init__.py
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: make check-tag
+
+  deb:
+    runs-on: ubuntu-latest
+    # Build inside the same Debian release we target (trixie) so dh-python,
+    # debhelper and python3-* versions match what users actually have.
+    container:
+      image: debian:trixie
+    steps:
+      - name: Install build deps
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git make \
+            build-essential debhelper dh-python pybuild-plugin-pyproject \
+            python3 python3-setuptools devscripts
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Sync changelog from __init__.py
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          DEBFULLNAME: GitHub Actions
+          DEBEMAIL: actions@github.com
+        run: make sync-deb
+
+      - name: Build .deb
+        run: make deb
+
+      - name: Collect .deb
+        run: |
+          mkdir -p dist
+          mv ../snapclientmpris_*.deb dist/
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: snapclientmpris-deb
+          path: dist/*.deb
+          if-no-files-found: error
+
+  release:
+    needs: [lint, deb]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: snapclientmpris-deb
+          path: dist/
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*.deb
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+
+  notify-apt-repo:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.APT_REPO_TOKEN }}
+          repository: b0bbywan/odio-apt-repo
+          event-type: release-published
+          client-payload: '{"repo": "${{ github.repository }}", "tag": "${{ github.ref_name }}"}'
