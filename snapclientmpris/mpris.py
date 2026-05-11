@@ -199,7 +199,20 @@ class MediaPlayer2Player(ServiceInterface):
     @Volume.setter  # type: ignore[no-redef]
     def Volume(self, val: "d") -> None:
         clamped = max(0.0, min(1.0, float(val)))
+        logger.debug("MPRIS Set Volume: %.3f -> %.3f", self._volume, clamped)
+        if clamped == self._volume:
+            # Still trigger the backend hook so the snapserver-side state
+            # follows even when the value is identical (idempotent retry).
+            if self._on_volume_set:
+                self._on_volume_set(clamped)
+            return
         self._volume = clamped
+        # Emit synchronously so every MPRIS subscriber (gnome-music, KDE
+        # plasma, etc.) learns about the change. The follow-up refresh()
+        # triggered by client.OnVolumeChanged will early-return in
+        # update_volume() because self._volume already matches — no double
+        # emit.
+        self.emit_properties_changed({"Volume": clamped})
         if self._on_volume_set:
             self._on_volume_set(clamped)
 
@@ -223,7 +236,10 @@ class MediaPlayer2Player(ServiceInterface):
         """Set Volume from external state (e.g. snapserver event)."""
         clamped = max(0.0, min(1.0, float(volume)))
         if clamped == self._volume:
+            logger.debug("update_volume: no change (%.3f), skip emit", clamped)
             return
+        logger.debug("update_volume: %.3f -> %.3f, emitting PropertiesChanged",
+                     self._volume, clamped)
         self._volume = clamped
         self.emit_properties_changed({"Volume": clamped})
 
