@@ -13,7 +13,7 @@ else:
 
 setup(
     name="snapcastmpris",
-    version="1.0.0",
+    version="1.0.1",
     author="HiFiBerry",
     author_email="info@hifiberry.com",
     description=description,

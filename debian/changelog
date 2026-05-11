@@ -1,0 +1,16 @@
+snapcastmpris (1.0.1) unstable; urgency=medium
+
+  * Fork of hifiberry/snapcastmpris for the b0bbywan APT repository
+  * Add dbus-bus config key (system|session, defaults to system to match
+    upstream hifiberry behaviour) so the bridge can also run as a user
+    systemd unit on the session bus
+  * Resolve config from $XDG_CONFIG_HOME/snapcastmpris/snapcastmpris.conf
+    with /etc/snapcastmpris.conf as fallback; built-in defaults otherwise
+  * Ship both a user and a system systemd unit (neither auto-enabled)
+    so the package can be deployed either as a per-user MPRIS bridge or
+    as a system service matching the upstream hifiberry deployment
+  * Ship an example config template at
+    /usr/share/snapcastmpris/snapcastmpris.conf
+  * Initial Debian packaging
+
+ -- Mathieu Réquillart <mathieu.requillart@gmail.com>  Mon, 11 May 2026 12:00:00 +0000

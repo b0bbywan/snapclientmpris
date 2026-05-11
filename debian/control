@@ -1,0 +1,43 @@
+Source: snapcastmpris
+Section: sound
+Priority: optional
+Maintainer: Mathieu Réquillart <mathieu.requillart@gmail.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ dh-python,
+ python3,
+ python3-setuptools,
+Rules-Requires-Root: no
+Standards-Version: 4.7.0
+Homepage: https://github.com/b0bbywan/snapcastmpris
+Vcs-Git: https://github.com/b0bbywan/snapcastmpris.git
+Vcs-Browser: https://github.com/b0bbywan/snapcastmpris
+
+Package: snapcastmpris
+Architecture: all
+Depends:
+ python3,
+ python3-dbus,
+ python3-gi,
+ python3-websocket,
+ python3-requests,
+ python3-zeroconf,
+ python3-alsaaudio,
+ snapclient,
+ ${misc:Depends},
+ ${python3:Depends},
+Description: MPRIS2 bridge for Snapcast clients
+ snapcastmpris exposes the local Snapcast client (snapclient) on D-Bus as
+ an MPRIS2 MediaPlayer2, allowing standard media controls (play / pause
+ / stop) and Snapserver stream switching from any MPRIS2-aware client.
+ .
+ By default the bridge registers on the system bus (matching upstream
+ hifiberry behaviour); this can be switched to the session bus via the
+ dbus-bus key. The configuration is read from
+ $XDG_CONFIG_HOME/snapcastmpris/snapcastmpris.conf with a fallback to
+ /etc/snapcastmpris.conf. An example configuration is shipped at
+ /usr/share/snapcastmpris/snapcastmpris.conf.
+ .
+ Both a system systemd unit (default, system bus) and a user unit
+ (for per-user / session-bus deployments) are shipped; neither is
+ auto-enabled.
