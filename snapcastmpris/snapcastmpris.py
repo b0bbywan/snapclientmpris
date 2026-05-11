@@ -22,14 +22,19 @@ except ImportError:
     import glib as GLib
 
 
+snapcast_wrapper = None
+
+
 def stop_snapcast(signalNumber, frame):
-    logging.info("received USR1, stopping snapcast")
-    snapcast_wrapper.stop_playback()
+    logging.info("received USR2, stopping snapcast")
+    if snapcast_wrapper is not None:
+        snapcast_wrapper.stop_playback()
 
 
 def pause_snapcast(signalNumber, frame):
-    logging.info("received USR2, pausing snapcast")
-    snapcast_wrapper.pause_playback()
+    logging.info("received USR1, pausing snapcast")
+    if snapcast_wrapper is not None:
+        snapcast_wrapper.pause_playback()
 
 
 def read_config():
@@ -97,6 +102,7 @@ def main():
     signal.signal(signal.SIGUSR1, pause_snapcast)
     signal.signal(signal.SIGUSR2, stop_snapcast)
 
+    global snapcast_wrapper
     try:
         config = read_config()
         server_address = config.get("snapcast", "server", fallback=get_zeroconf_server_address())
