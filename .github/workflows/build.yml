@@ -19,12 +19,15 @@ jobs:
         if: always()
         with:
           python-version: '3.11'
-      - name: Install mypy
+      - name: Install mypy + runtime + test deps
         if: always()
-        run: pip install mypy
+        run: pip install mypy pytest snapcast dbus-fast zeroconf
       - name: mypy
         if: always()
         run: mypy snapclientmpris/
+      - name: pytest
+        if: always()
+        run: pytest -q
 
   deb:
     runs-on: ubuntu-latest
