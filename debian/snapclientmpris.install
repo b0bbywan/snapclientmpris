@@ -1,0 +1,4 @@
+data/user/snapclientmpris.service usr/lib/systemd/user/
+data/system/snapclientmpris.service usr/lib/systemd/system/
+data/system/org.mpris.MediaPlayer2.snapcast.conf usr/share/dbus-1/system.d/
+data/snapclientmpris.conf usr/share/snapclientmpris/
