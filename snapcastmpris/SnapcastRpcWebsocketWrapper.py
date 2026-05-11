@@ -42,10 +42,17 @@ class SnapcastRpcWebsocketWrapper:
         logging.debug(message)
         json_data = json.loads(message)
 
-        handlers = self.get_event_handlers_mapping()
+        # Responses to our own JSON-RPC requests carry "result" / "error"
+        # instead of "method"; nothing to dispatch.
+        if "method" not in json_data:
+            return
 
         event = json_data["method"]
-        handlers[event](json_data["params"])
+        handler = self.get_event_handlers_mapping().get(event)
+        if handler is None:
+            logging.debug("unhandled snapcast RPC event: %s", event)
+            return
+        handler(json_data.get("params", {}))
 
     def get_event_handlers_mapping(self):
         return {
