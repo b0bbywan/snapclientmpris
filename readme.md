@@ -1,68 +1,137 @@
-# Snapcast MPRIS wrapper
+# snapclientmpris
 
-([MPRIS: Media Player Remote Interfacing Specification](https://specifications.freedesktop.org/mpris-spec/2.2/))
+An [MPRIS2](https://specifications.freedesktop.org/mpris-spec/2.2/) D-Bus
+bridge for the local Snapcast client. It surfaces the currently playing
+track (title, artist, album, art) from a snapserver and lets any
+MPRIS2-aware client pause and resume audio by toggling the local
+client's mute on the server.
 
-This project is a wrapper around the Snapclient binary and the Snapserver RPC API. 
-It exposes the current playing state on the desktop bus (D-BUS), and allows control 
-through the DBUS play/pause/stop signals. 
+The MPRIS interface is published under the bus name
+`org.mpris.MediaPlayer2.snapcast` (the player exposes itself as the
+Snapcast source, not the client implementation detail).
 
-## General working
-When the main script (`snapcastmpris.py`) is executed, it will hook into the communication 
-busses and set up and endless loop. An instance of `SnapcastWrapper`, which lives 
-in a separate thread, is created.
+## Credits
 
-`SnapcastWrapper` has methods to start/pause/play snapcast audio, and keeps track of the _snapclient_ 
-process. It gets help from `SnapcastRpcWrapper`, which communicates with _snapserver_, the snapcast server.
-This communication with [the Snapserver RPC API](https://github.com/badaix/snapcast/blob/master/doc/json_rpc_api/v2_0_0.md)
-is used to control the snapcast audio level, mute status, client name. The `SnapcastRpcWebsocketWrapper` is used to receive 
-events from [the Snapserver RPC API](https://github.com/badaix/snapcast/blob/master/doc/json_rpc_api/v2_0_0.md). It receives 
-information about the stream that is currently playing, such as the playing state and the name, and passes this on to 
-the `SnapcastWrapper`. Volume level changes, muting of a client, client connects, disconnects, ... is handled by this 
-websocket wrapper as well. `SnapcastMPRISInterface` is used to communicate through the DBUS, to receive play/pause/stop signals from the OS and to relay information about the current state back to the OS. 
+This project started life as a fork of
+[`hifiberry/snapcastmpris`](https://github.com/hifiberry/snapcastmpris)
+— thanks to HiFiBerry for the original idea and for the work on tying
+[Snapcast](https://github.com/badaix/snapcast)'s JSON-RPC API to MPRIS2.
+Without their daemon there would be nothing to fork.
 
-## What SnapcastWrapper does
-SnapcastWrapper runs in a separate thread from the main script.
-SnapcastWrapper implements the SnapcastRpcListener class and methods, which are called by SnapcastRpcWebsocketWrapper.
-When ALSA <=> Snapclient volume synchronisation is enabled, SnapcastWrapper will monitor the ALSA volume level and send
-any changes to Snapserver through SnapcastRPCWrapper. Volume synchronisation is disabled by default and enabled through the `--sync_alsa_volume` or `-s` flag or via the configuration with `sync-alsa-volume = 1`. It requires the `alsaaudio` library to be installed. Also the ALS mixer can be provided through the `-m` or `--mixer` flag or via the configuration with `alsa-mixer = Softvol`.
+The current codebase is a complete rewrite around asyncio and contains
+no upstream code. The repository was subsequently renamed from
+`snapcastmpris` to `snapclientmpris` to better reflect what the daemon
+does — it controls the local snapclient process, not the snapserver.
 
-### Playing audio
-When playing audio
-- A Snapclient process is started 
-- Snapclient is unmuted through an RPC call
-- Other audio players are stopped (through the HifiBerryOS pause-all script)
-- DBUS status is updated
+## What's different from upstream
 
-### Pausing audio
-When pausing audio
-- Snapclient is muted through an RPC call
-- depending on the "pause" source, a flag in order to prevent snapclient to switch back to playing on the next stream update. 
-It will only switch back to playing automatically when the snapcast source stream has been paused.
-- Snapclient keeps running
-- DBUS status is updated
+* Single asyncio event loop instead of threads + GLib MainLoop +
+  websocket-client + dbus-python.
+* [`python-snapcast`](https://github.com/happyleavesaoc/python-snapcast)
+  for the snapserver JSON-RPC channel (no bespoke RPC / WebSocket
+  client) and [`dbus-fast`](https://github.com/Bluetooth-Devices/dbus-fast)
+  for the MPRIS interface (no GLib).
+* Picks up track metadata from the `Stream.OnProperties` snapserver
+  event (snapserver ≥ 0.27) and surfaces it as `xesam:*` / `mpris:*`
+  keys, so MPRIS clients see the actual track title / artist / album.
+* Configuration is resolved from
+  `$XDG_CONFIG_HOME/snapclientmpris/snapclientmpris.conf` with
+  `/etc/snapclientmpris.conf` as fallback. An example template ships at
+  `/usr/share/snapclientmpris/snapclientmpris.conf`.
+* The `dbus-bus` config key chooses between the system bus (default,
+  matches the upstream HiFiBerry deployment) and the session bus (for
+  a `systemctl --user` deployment).
+* The ALSA volume sync and the HiFiBerry pause-all integration are
+  intentionally dropped; they were tied to the original HiFiBerry
+  appliance and don't fit the [Odio](https://apt.odio.love) target.
 
-### Stopping audio
-When stopping audio
-- The snapclient process is stopped
-- DBUS information is updated
-- SnapcastWrapper keeps running in order to act should a play signal come from DBUS or snapserver.
+## Install
 
-## What SnapcastRpcWrapper does
-SnapcastRpcWrapper is a helper class to SnapcastWrapper, and provides access to 
-[the Snapserver RPC API](https://github.com/badaix/snapcast/blob/master/doc/json_rpc_api/v2_0_0.md). It can mute and 
-unmute the client, set the client volume, change the client latency and change the client name. Through
-SnapcastRpcWrapper, the client information and server information can be obtained.
+From the Odio APT repository:
 
-*The advantage of muting* is that snapserver can be configured not to send data to muted clients. This means that a 
-muted client will reduce network traffic, compared to a running process with ignored audio.
+```sh
+curl -fsSL https://apt.odio.love/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/odio.gpg
+echo "deb [signed-by=/usr/share/keyrings/odio.gpg] https://apt.odio.love stable main" \
+    | sudo tee /etc/apt/sources.list.d/odio.list
+sudo apt update
+sudo apt install snapclientmpris
+```
 
-## What SnapcastRpcWebsocketWrapper does
-SnapcastRpcWebsocketWrapper runs a websocket in a separate thread, and calls callback methods in SnapcastWrapper (a SnapcastRpcListener 
-implementation) to act on stream and client status changes. 
+The package ships both a system and a user systemd unit; neither is
+auto-enabled. Pick whichever fits your setup:
 
-- When muted, the status is set to paused
-- When unmuted, nothing is done. If a stream is already playing to the active device, and the player is in PAUSED mode, 
-the player should switch to playing. This has not been implemented yet.
-- When a stream switches from idle to playing, and the previous pause event was not caused by a DBUS event, SnapcastWrapper switches to the playing state.
-- When a stream switches from playing to idle, the SnapcastWrapper pause logic is triggered to mute the client and switch to the PAUSED state.
-- When the snapclient volume level is changed, and ALSA <=> Snapclient volume synchronisation is enabled, the ALSA volume is adjusted.
+```sh
+# System mode (default, runs as root, system bus)
+sudo cp /usr/share/snapclientmpris/snapclientmpris.conf /etc/snapclientmpris.conf
+sudo systemctl enable --now snapclientmpris.service
+
+# User mode (session bus)
+mkdir -p ~/.config/snapclientmpris
+cp /usr/share/snapclientmpris/snapclientmpris.conf ~/.config/snapclientmpris/
+sed -i 's/^dbus-bus = system/dbus-bus = session/' \
+    ~/.config/snapclientmpris/snapclientmpris.conf
+systemctl --user daemon-reload
+systemctl --user enable --now snapclientmpris.service
+```
+
+## Configuration
+
+```ini
+# Snapcast server IP. Leave commented to use Zeroconf auto-discovery.
+# server = 192.168.1.100
+
+# D-Bus bus: system (default) or session.
+dbus-bus = system
+
+# Override the snapserver JSON-RPC control port (default: 1705).
+# control-port = 1705
+```
+
+## Architecture
+
+```
++------------------+        JSON-RPC        +-----------+
+| snapcast.control |  <------------------>  | snapserver|
+|  (asyncio)       |                        +-----------+
++--------+---------+
+         | callbacks (stream / client)
+         v
++------------------+                        +------------+
+| snapclientmpris  |  asyncio.subprocess →  | snapclient |
+| daemon           |                        +------------+
++--------+---------+
+         | dbus-fast (ServiceInterface)
+         v
++------------------+
+| /org/mpris/      |  ← MPRIS2 clients (gnome-music, playerctl, …)
+|   MediaPlayer2   |
++------------------+
+```
+
+Two Python modules:
+
+* [`snapclientmpris/snapclientmpris.py`](snapclientmpris/snapclientmpris.py)
+  — daemon entry point. Reads config, discovers the snapserver, spawns
+  snapclient, identifies this host's client by MAC, wires callbacks
+  and signal handlers, runs the asyncio loop.
+* [`snapclientmpris/mpris.py`](snapclientmpris/mpris.py) —
+  `MediaPlayer2` and `MediaPlayer2.Player` `ServiceInterface`
+  subclasses for dbus-fast, plus a helper that maps snapserver's
+  MPRIS-like metadata to `xesam:*` / `mpris:*` keys.
+
+## Signals
+
+* `SIGUSR1` — pause (mute the local snapserver client).
+* `SIGUSR2` — also pause; the daemon treats Stop as Pause since
+  snapclient stays running for instant resume.
+
+## Build a .deb
+
+`dpkg-buildpackage` on Debian trixie or any derivative with
+`debhelper-compat (= 13)`, `dh-python`, `python3-setuptools`,
+`python3-snapcast`, `python3-dbus-fast`. CI builds tagged releases
+(`v*`) automatically and attaches the `.deb` to the GitHub release.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
