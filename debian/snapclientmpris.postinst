@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+#DEBHELPER#
+# Neither service is auto-enabled. Pick one of:
+#
+# 1) System mode (default, matches upstream hifiberry behaviour, runs as root):
+#      cp /usr/share/snapclientmpris/snapclientmpris.conf /etc/snapclientmpris.conf
+#      # edit /etc/snapclientmpris.conf
+#      systemctl daemon-reload
+#      systemctl enable --now snapclientmpris.service
+#
+# 2) User mode (session bus):
+#      mkdir -p ~/.config/snapclientmpris
+#      cp /usr/share/snapclientmpris/snapclientmpris.conf ~/.config/snapclientmpris/
+#      sed -i 's/^dbus-bus = system/dbus-bus = session/' \
+#        ~/.config/snapclientmpris/snapclientmpris.conf
+#      systemctl --user daemon-reload
+#      systemctl --user enable --now snapclientmpris.service

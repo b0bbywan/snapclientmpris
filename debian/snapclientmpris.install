@@ -1,0 +1,3 @@
+data/user/snapclientmpris.service usr/lib/systemd/user/
+data/system/snapclientmpris.service usr/lib/systemd/system/
+data/snapclientmpris.conf usr/share/snapclientmpris/

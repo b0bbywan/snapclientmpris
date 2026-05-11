@@ -1,0 +1,43 @@
+Source: snapclientmpris
+Section: sound
+Priority: optional
+Maintainer: Mathieu Réquillart <mathieu.requillart@gmail.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ dh-python,
+ python3,
+ python3-setuptools,
+Rules-Requires-Root: no
+Standards-Version: 4.7.0
+Homepage: https://github.com/b0bbywan/snapclientmpris
+Vcs-Git: https://github.com/b0bbywan/snapclientmpris.git
+Vcs-Browser: https://github.com/b0bbywan/snapclientmpris
+
+Package: snapclientmpris
+Architecture: all
+Depends:
+ python3,
+ python3-snapcast,
+ python3-dbus-fast,
+ python3-zeroconf,
+ snapclient,
+ ${misc:Depends},
+ ${python3:Depends},
+Description: MPRIS2 bridge for the local Snapcast client
+ snapclientmpris exposes the local Snapcast client (snapclient) on D-Bus
+ as an MPRIS2 MediaPlayer2 player. It surfaces the currently playing
+ track (title, artist, album, art) from snapserver and lets MPRIS2-aware
+ clients pause and resume audio. The daemon runs entirely on asyncio:
+ python-snapcast for the snapserver JSON-RPC channel and dbus-fast for
+ the MPRIS interface.
+ .
+ By default the bridge registers on the system bus (matching the
+ upstream hifiberry deployment); this can be switched to the session
+ bus via the dbus-bus key. The configuration is read from
+ $XDG_CONFIG_HOME/snapclientmpris/snapclientmpris.conf with a fallback
+ to /etc/snapclientmpris.conf. An example configuration is shipped at
+ /usr/share/snapclientmpris/snapclientmpris.conf.
+ .
+ Both a system systemd unit (default, system bus) and a user unit
+ (for per-user / session-bus deployments) are shipped; neither is
+ auto-enabled.
