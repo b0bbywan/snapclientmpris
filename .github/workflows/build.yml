@@ -19,12 +19,15 @@ jobs:
         if: always()
         with:
           python-version: '3.11'
-      - name: Install mypy
+      - name: Install runtime + dev deps
         if: always()
-        run: pip install mypy
+        run: pip install -e .[dev]
       - name: mypy
         if: always()
         run: mypy snapclientmpris/
+      - name: pytest
+        if: always()
+        run: pytest -q
 
   deb:
     runs-on: ubuntu-latest
