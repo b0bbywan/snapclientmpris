@@ -1,4 +1,3 @@
-import json
 from os import listdir
 import logging
 import requests

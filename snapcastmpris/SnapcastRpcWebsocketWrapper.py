@@ -2,7 +2,6 @@ import json
 import logging
 import threading
 import websocket
-from snapcastmpris.SnapcastRpcWrapper import SnapcastRpcWrapper
 from snapcastmpris.SnapcastRpcListener import SnapcastRpcListener
 
 RPC_EVENT_CLIENT_VOLUME_CHANGE = "Client.OnVolumeChanged"

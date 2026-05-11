@@ -1,10 +1,4 @@
-import sys
 import logging
-import time
-import os
-import subprocess
-import json
-import signal
 import dbus.service
 from snapcastmpris import SnapcastWrapper
 
