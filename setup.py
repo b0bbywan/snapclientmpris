@@ -68,7 +68,7 @@ setup(
         "zeroconf>=0.28",
     ],
     extras_require={
-        "dev": ["pytest", "flake8"],
+        "dev": ["pytest", "mypy"],
     },
     include_package_data=True,
     zip_safe=False,
