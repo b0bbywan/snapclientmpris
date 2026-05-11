@@ -116,7 +116,14 @@ def main():
         if not volume_sync_enabled and config.has_option("snapcast", "sync-alsa-volume"):
             volume_sync_enabled = config.getboolean("snapcast", "sync-alsa-volume", fallback=False)
 
-        snapcast_wrapper = SnapcastWrapper(glib_main_loop, server_address, sync_volume=volume_sync_enabled, alsa_mixer=mixer)
+        bus_type = config.get("snapcast", "dbus-bus", fallback="system").strip().lower()
+        if bus_type == "system":
+            bus = dbus.SystemBus()
+        else:
+            bus = dbus.SessionBus()
+        logging.info("using %s D-Bus", bus_type)
+
+        snapcast_wrapper = SnapcastWrapper(glib_main_loop, server_address, bus, sync_volume=volume_sync_enabled, alsa_mixer=mixer)
 
         if config.getboolean("snapcast", "autostart", fallback=True):
             snapcast_wrapper.autostart_on_stream()
