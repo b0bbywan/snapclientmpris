@@ -176,38 +176,38 @@ async def control_stream(
 async def run(host: str, control_port: int, bus_type: BusType) -> None:
     loop = asyncio.get_running_loop()
 
-    server = snapcast.control.Snapserver(loop, host, control_port)
+    server = snapcast.control.Snapserver(loop, host, control_port, reconnect=True)
     await server.start()
     logger.info("connected to snapserver at %s:%d", host, control_port)
 
-    # Find this host's snapclient in the snapserver roster (matched by MAC).
-    # The local snapclient is started by its own systemd unit, so it may
-    # take a moment to register after us; retry once.
+    # The local snapclient is started by its own systemd unit and may not
+    # have registered yet when we connect. We attempt one initial match,
+    # then rely on Snapserver.set_new_client_callback below to pick it up
+    # whenever it eventually joins.
     macs = local_mac_addresses()
     client = identify_client(server, macs)
     if client is None:
-        await asyncio.sleep(2)
-        await server.status()
-        client = identify_client(server, macs)
-    if client is None:
-        logger.warning("local MAC %s not in snapserver roster; controls and "
-                       "metadata will be inert until snapclient registers", macs)
+        logger.info("local MAC %s not in snapserver roster yet; waiting "
+                    "for snapclient to register", macs)
 
     def refresh() -> None:
-        if client is None:
-            return
-        s = client_stream(server, client)
-        logger.debug("refresh: client.volume=%s stream=%s status=%s",
-                     client.volume,
-                     s.identifier if s is not None else None,
-                     s.status if s is not None else None)
-        md = stream_metadata(host, s)
-        if md is not None:
-            player.update_metadata(md)
-        player.update_playback_status(playback_status(s))
-        player.update_capabilities(stream_capabilities(s))
-        if client.volume is not None:
-            player.update_volume(client.volume / 100.0)
+        try:
+            if client is None:
+                return
+            s = client_stream(server, client)
+            logger.debug("refresh: client.volume=%s stream=%s status=%s",
+                         client.volume,
+                         s.identifier if s is not None else None,
+                         s.status if s is not None else None)
+            md = stream_metadata(host, s)
+            if md is not None:
+                player.update_metadata(md)
+            player.update_playback_status(playback_status(s))
+            player.update_capabilities(stream_capabilities(s))
+            if client.volume is not None:
+                player.update_volume(client.volume / 100.0)
+        except Exception:
+            logger.exception("refresh failed")
 
     # Strong-reference fire-and-forget tasks so the event loop's weak refs
     # don't let them be GC'd mid-execution (asyncio docs explicitly warn).
@@ -251,12 +251,66 @@ async def run(host: str, control_port: int, bus_type: BusType) -> None:
     await bus.request_name(BUS_NAME)
     logger.info("D-Bus name acquired: %s", BUS_NAME)
 
-    # Any change to streams (status, metadata, properties) or to our
-    # client (volume, mute) triggers a full refresh.
-    for s in server.streams:
-        s.set_callback(lambda _stream: refresh())
-    if client is not None:
-        client.set_callback(lambda _client: refresh())
+    # Subscribe to every granularity python-snapcast exposes:
+    #  * per-stream callback fires on stream property/metadata updates;
+    #  * per-group callback fires on volume / mute / stream rebind for
+    #    any client in the group (Snapclient.update_volume routes the
+    #    notification through its group, not the client itself);
+    #  * server on-update fires on full state sync and new-stream events
+    #    — we re-wire stream/group callbacks here because streams added
+    #    after startup have none of ours;
+    #  * server new-client callback recovers the snapclient identification
+    #    if it registered after we connected.
+    def wire_entity_callbacks() -> None:
+        for s in server.streams:
+            s.set_callback(lambda _stream: refresh())
+        for g in server.groups:
+            g.set_callback(lambda _group: refresh())
+
+    def on_server_update() -> None:
+        wire_entity_callbacks()
+        refresh()
+
+    def on_new_client(new_client: snapcast.control.Snapclient) -> None:
+        nonlocal client
+        if client is None and new_client.identifier in macs:
+            client = new_client
+            logger.info("snapclient registered: %s", new_client.identifier)
+        refresh()
+
+    def on_disconnect(exception: Exception | None) -> None:
+        # snapserver dropped. With reconnect=True, python-snapcast will
+        # retry every SERVER_RECONNECT_DELAY seconds, but in the meantime
+        # we can't trust the last metadata / playback state we observed —
+        # snapserver may come back with a clean slate. Clear MPRIS back
+        # to "nothing playing" until on_connect re-syncs.
+        nonlocal client
+        logger.info("snapserver disconnected (%s); clearing MPRIS state", exception)
+        client = None
+        player.update_playback_status("Stopped")
+        player.update_metadata({})
+        player.update_capabilities({
+            "CanPlay": False, "CanPause": False,
+            "CanGoNext": False, "CanGoPrevious": False, "CanSeek": False,
+        })
+
+    def on_connect() -> None:
+        # python-snapcast just ran synchronize() against fresh status.
+        # Existing Snapstream/Snapclient/Snapgroup instances with matching
+        # IDs are preserved (and keep our callbacks); newly-appeared ones
+        # are fresh objects with no callback. Re-identify our client and
+        # re-wire entity callbacks to cover both cases.
+        nonlocal client
+        logger.info("snapserver (re)connected; re-syncing MPRIS state")
+        client = identify_client(server, macs)
+        wire_entity_callbacks()
+        refresh()
+
+    server.set_on_update_callback(on_server_update)
+    server.set_new_client_callback(on_new_client)
+    server.set_on_disconnect_callback(on_disconnect)
+    server.set_on_connect_callback(on_connect)
+    wire_entity_callbacks()
 
     refresh()  # seed
 
