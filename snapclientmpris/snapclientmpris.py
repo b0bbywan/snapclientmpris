@@ -29,6 +29,8 @@ from snapclientmpris.mpris import (
     ROOT_PATH,
     MediaPlayer2,
     MediaPlayer2Player,
+)
+from snapclientmpris.translate import (
     snapserver_to_playback_status,
     translate_snapserver_metadata,
 )
