@@ -1,0 +1,17 @@
+#!/usr/bin/make -f
+export PYBUILD_NAME=snapclientmpris
+
+%:
+	dh $@ --with python3 --buildsystem=pybuild
+
+# Both bridge units are opt-in — the user picks system vs session mode
+# after editing the config, and the postinst documents the steps. Tell
+# the debhelper systemd hooks not to enable or start either unit on
+# install, otherwise debhelper does it silently (auto-start for the
+# system unit, auto-enable on first user session for the user unit) and
+# contradicts what we promise.
+override_dh_installsystemd:
+	dh_installsystemd --no-enable --no-start
+
+override_dh_installsystemduser:
+	dh_installsystemduser --no-enable
