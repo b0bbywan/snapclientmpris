@@ -37,6 +37,31 @@ from snapclientmpris.translate import (
 
 logger = logging.getLogger("snapclientmpris")
 
+CONNECT_BACKOFF_MIN = 1.0
+CONNECT_BACKOFF_MAX = 30.0
+CONNECT_BACKOFF_FACTOR = 1.5
+
+
+async def _reconnect_with_backoff(server: snapcast.control.Snapserver) -> None:
+    """Retry ``server.start()`` forever with exponential backoff on OSError.
+
+    Used out of on_disconnect: the initial connection path is fail-fast
+    (systemd Restart= owns the retry policy at startup), so this helper is
+    reconnect-only. Delay grows by CONNECT_BACKOFF_FACTOR and caps at
+    CONNECT_BACKOFF_MAX so we don't drift to absurd intervals.
+    """
+    delay = CONNECT_BACKOFF_MIN
+    while True:
+        try:
+            await server.start()
+            return
+        except OSError as e:
+            logger.warning(
+                "snapserver reconnect failed (%s); retrying in %.1fs", e, delay
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * CONNECT_BACKOFF_FACTOR, CONNECT_BACKOFF_MAX)
+
 
 def local_mac_addresses() -> list[str]:
     """Return MAC addresses of all up, non-loopback interfaces."""
@@ -180,7 +205,10 @@ async def control_stream(
 async def run(host: str, control_port: int, bus_type: BusType) -> None:
     loop = asyncio.get_running_loop()
 
-    server = snapcast.control.Snapserver(loop, host, control_port, reconnect=True)
+    # reconnect=False: python-snapcast's built-in retry is a fixed 5 s delay
+    # with no cap on attempts. We manage reconnection ourselves out of
+    # on_disconnect to get exponential backoff (CONNECT_BACKOFF_*).
+    server = snapcast.control.Snapserver(loop, host, control_port, reconnect=False)
     await server.start()
     logger.info("connected to snapserver at %s:%d", host, control_port)
 
@@ -282,13 +310,15 @@ async def run(host: str, control_port: int, bus_type: BusType) -> None:
             logger.info("snapclient registered: %s", new_client.identifier)
         refresh()
 
+    reconnect_task: asyncio.Task | None = None
+
     def on_disconnect(exception: Exception | None) -> None:
-        # snapserver dropped. With reconnect=True, python-snapcast will
-        # retry every SERVER_RECONNECT_DELAY seconds, but in the meantime
-        # we can't trust the last metadata / playback state we observed —
-        # snapserver may come back with a clean slate. Clear MPRIS back
-        # to "nothing playing" until on_connect re-syncs.
-        nonlocal client
+        # snapserver dropped. We can't trust the last metadata / playback
+        # state we observed — snapserver may come back with a clean slate.
+        # Clear MPRIS back to "nothing playing" until on_connect re-syncs,
+        # then schedule a backoff-driven reconnect (python-snapcast's own
+        # reconnect is disabled — see Snapserver(reconnect=False) above).
+        nonlocal client, reconnect_task
         logger.info("snapserver disconnected (%s); clearing MPRIS state", exception)
         client = None
         player.update_playback_status("Stopped")
@@ -297,6 +327,14 @@ async def run(host: str, control_port: int, bus_type: BusType) -> None:
             "CanPlay": False, "CanPause": False,
             "CanGoNext": False, "CanGoPrevious": False, "CanSeek": False,
         })
+        if reconnect_task is None or reconnect_task.done():
+            reconnect_task = schedule_reconnect()
+
+    def schedule_reconnect() -> asyncio.Task:
+        task = loop.create_task(_reconnect_with_backoff(server))
+        bg_tasks.add(task)
+        task.add_done_callback(bg_tasks.discard)
+        return task
 
     def on_connect() -> None:
         # python-snapcast just ran synchronize() against fresh status.
@@ -337,4 +375,6 @@ async def run(host: str, control_port: int, bus_type: BusType) -> None:
         await asyncio.Event().wait()
     finally:
         logger.info("shutting down")
+        if reconnect_task is not None and not reconnect_task.done():
+            reconnect_task.cancel()
         server.stop()
