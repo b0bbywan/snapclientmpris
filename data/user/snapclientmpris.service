@@ -2,9 +2,12 @@
 Description=Snapcast MPRIS2 bridge
 After=network-online.target snapclient.service
 Wants=network-online.target snapclient.service
+ConditionUser=!root
+ConditionUser=!@system
 
 [Service]
-Type=simple
+Type=dbus
+BusName=org.mpris.MediaPlayer2.snapcast
 ExecStart=/usr/bin/snapclientmpris
 Restart=on-failure
 RestartSec=5

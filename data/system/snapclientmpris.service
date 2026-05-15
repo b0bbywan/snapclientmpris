@@ -4,7 +4,8 @@ After=network-online.target dbus.service snapclient.service
 Wants=network-online.target snapclient.service
 
 [Service]
-Type=simple
+Type=dbus
+BusName=org.mpris.MediaPlayer2.snapcast
 User=_snapclient
 Group=_snapclient
 ExecStart=/usr/bin/snapclientmpris
