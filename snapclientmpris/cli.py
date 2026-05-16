@@ -191,7 +191,10 @@ def main() -> None:
                 host, control_port,
                 "session" if bus_type == BusType.SESSION else "system")
 
-    with contextlib.suppress(KeyboardInterrupt):
+    # SIGTERM/SIGINT inside run() cancel the main task — asyncio.run()
+    # then re-raises the CancelledError; suppress both that and the
+    # pre-loop KeyboardInterrupt path for a clean exit code.
+    with contextlib.suppress(KeyboardInterrupt, asyncio.CancelledError):
         asyncio.run(run(host, control_port, bus_type))
 
 

@@ -324,12 +324,17 @@ async def run(host: str, control_port: int, bus_type: BusType) -> None:
     loop.add_signal_handler(signal.SIGUSR1, lambda: control("pause"))
     loop.add_signal_handler(signal.SIGUSR2, lambda: control("stop"))
 
-    stop_event = asyncio.Event()
-    loop.add_signal_handler(signal.SIGTERM, stop_event.set)
-    loop.add_signal_handler(signal.SIGINT, stop_event.set)
+    # Shutdown via task cancellation: SIGTERM/SIGINT cancel the running
+    # task, the CancelledError raised by the idle await below unwinds
+    # through the finally clause for orderly teardown. This is the
+    # modern asyncio pattern — no Event/flag plumbing required.
+    task = asyncio.current_task()
+    assert task is not None
+    loop.add_signal_handler(signal.SIGTERM, task.cancel)
+    loop.add_signal_handler(signal.SIGINT, task.cancel)
 
     try:
-        await stop_event.wait()
+        await asyncio.Event().wait()
     finally:
         logger.info("shutting down")
         server.stop()
