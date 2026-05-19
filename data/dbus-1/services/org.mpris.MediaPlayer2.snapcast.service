@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.mpris.MediaPlayer2.snapcast
+Exec=/usr/bin/snapclientmpris
+SystemdService=snapclientmpris.service
