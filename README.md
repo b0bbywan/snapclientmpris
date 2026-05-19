@@ -17,13 +17,11 @@ Snapcast source, not the client implementation detail).
 This project started life as a fork of
 [`hifiberry/snapcastmpris`](https://github.com/hifiberry/snapcastmpris)
 — thanks to HiFiBerry for the original idea and for the work on tying
-[Snapcast](https://github.com/badaix/snapcast)'s JSON-RPC API to MPRIS2.
-Without their daemon there would be nothing to fork.
+[Snapcast](https://github.com/snapcast/snapcast)'s JSON-RPC API to MPRIS2.
 
-The current codebase is a complete rewrite around asyncio and contains
-no upstream code. The repository was subsequently renamed from
-`snapcastmpris` to `snapclientmpris` to better reflect what the daemon
-does — it controls the local snapclient process, not the snapserver.
+The current codebase is a complete rewrite around asyncio.
+The repository was subsequently renamed from`snapcastmpris`
+to `snapclientmpris` to better reflect what the daemon does.
 
 ## What's different from upstream
 
@@ -50,9 +48,7 @@ does — it controls the local snapclient process, not the snapserver.
 * The `dbus-bus` config key chooses between the session bus (default,
   for a `systemctl --user` deployment) and the system bus (legacy
   hifiberry-style, runs as `_snapclient` with a shipped D-Bus policy).
-* The ALSA volume sync and the HiFiBerry pause-all integration are
-  intentionally dropped; they were tied to the original HiFiBerry
-  appliance and don't fit the [Odio](https://apt.odio.love) target.
+* The ALSA volume sync and the mute = pause-all integration were dropped.
 
 ## Install
 
@@ -68,8 +64,9 @@ sudo apt install snapclientmpris
 
 The package depends on `snapclient`, so APT pulls it in automatically.
 Two bridge units are shipped (neither auto-enabled); pick whichever
-fits your setup — enabling the bridge unit also starts
-`snapclient.service` via `Wants=`.
+fits your setup.
+Both use `Type=dbus` with `BusName=org.mpris.MediaPlayer2.snapcast`
+and pull in `snapclient.service` via `Wants=`.
 
 ```sh
 # User mode (default, session bus)
@@ -80,6 +77,11 @@ sudo cp /usr/share/snapclientmpris/snapclientmpris.conf /etc/snapclientmpris.con
 sudo sed -i 's/^dbus-bus = session/dbus-bus = system/' /etc/snapclientmpris.conf
 sudo systemctl enable --now snapclientmpris.service
 ```
+
+In user mode the bridge is also D-Bus session-activatable: any MPRIS
+client (`playerctl`, desktop media keys, gnome-music) requesting the
+bus name starts it on demand, so `enable --now` is only needed if you
+want it up before any client asks for it.
 
 In system mode the daemon owns `org.mpris.MediaPlayer2.snapcast` on
 the system bus; the package ships the matching D-Bus policy at
