@@ -4,7 +4,9 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import snapclientmpris.snapclientmpris as scm
 from snapclientmpris.snapclientmpris import (
+    _connect_with_backoff,
     client_stream,
     control_stream,
     identify_client,
@@ -198,3 +200,53 @@ def test_identify_client_no_match():
 def test_identify_client_empty_macs():
     server = SimpleNamespace(clients=[SimpleNamespace(identifier="aa:bb")])
     assert identify_client(server, []) is None
+
+
+# --- _connect_with_backoff ---------------------------------------------
+def test_connect_with_backoff_retries_until_resolved(monkeypatch):
+    # resolve() returns None (no snapserver yet) then an endpoint.
+    endpoints = [None, ("host.example", 1705)]
+    seen = {}
+
+    class FakeServer:
+        def __init__(self, loop, host, port, reconnect):
+            seen.update(host=host, port=port, reconnect=reconnect)
+
+        async def start(self):
+            pass
+
+    monkeypatch.setattr(scm.snapcast.control, "Snapserver", FakeServer)
+    monkeypatch.setattr(scm.asyncio, "sleep", AsyncMock())
+
+    async def go():
+        loop = asyncio.get_running_loop()
+        return await _connect_with_backoff(loop, lambda: endpoints.pop(0))
+
+    server, host = asyncio.run(go())
+    assert isinstance(server, FakeServer)
+    assert host == "host.example"
+    assert seen == {"host": "host.example", "port": 1705, "reconnect": False}
+
+
+def test_connect_with_backoff_retries_on_oserror(monkeypatch):
+    attempts = {"n": 0}
+
+    class FakeServer:
+        def __init__(self, loop, host, port, reconnect):
+            pass
+
+        async def start(self):
+            attempts["n"] += 1
+            if attempts["n"] < 2:
+                raise OSError("connection refused")
+
+    monkeypatch.setattr(scm.snapcast.control, "Snapserver", FakeServer)
+    monkeypatch.setattr(scm.asyncio, "sleep", AsyncMock())
+
+    async def go():
+        loop = asyncio.get_running_loop()
+        return await _connect_with_backoff(loop, lambda: ("h", 1705))
+
+    _server, host = asyncio.run(go())
+    assert attempts["n"] == 2
+    assert host == "h"

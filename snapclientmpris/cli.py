@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import functools
 import logging
 import os
 import sys
@@ -111,44 +112,42 @@ def discover_snapserver() -> tuple[str, int | None] | None:
         zc.close()
 
 
-def resolve_snapserver_endpoint(cfg: dict[str, str]) -> tuple[str, int]:
-    """Return ``(host, control_port)`` from config + Zeroconf discovery.
+def parse_control_port(cfg: dict[str, str]) -> int:
+    """Validate the configured control port (fallback only, a discovered
+    port wins). Fail-fast on a typo. Raises ConfigError if unparseable.
+    """
+    raw_port = cfg.get("control-port") or SNAPSERVER_CONTROL_PORT
+    try:
+        return int(raw_port)
+    except ValueError as e:
+        raise ConfigError(f"invalid control-port {raw_port!r}") from e
 
-    Resolution order:
-      * ``server`` in config -> use it, port from ``control-port`` config
-        or the SNAPSERVER_CONTROL_PORT default;
-      * otherwise Zeroconf: snapserver >= 0.33 yields host + port via
-        ``_snapcast-ctrl._tcp``; older snapservers yield host only and the
-        port falls back to config / default.
 
-    Raises ConfigError on missing host or unparseable ``control-port``.
+def resolve_endpoint(
+    cfg: dict[str, str], default_control_port: int
+) -> tuple[str, int] | None:
+    """Return ``(host, control_port)`` from config server or Zeroconf, or
+    ``None`` if no host is found yet (transient, caller retries).
+
+    A snapserver >= 0.33 advertises its control port (wins); older ones only
+    give the host, so the port falls back to ``default_control_port``.
     """
     host = cfg.get("server") or None
     discovered_port: int | None = None
     if not host:
         discovered = discover_snapserver()
         if not discovered:
-            raise ConfigError(
-                "no snapserver configured and Zeroconf discovery failed"
-            )
+            return None
         host, discovered_port = discovered
-
     if discovered_port is not None:
-        # snapserver >= 0.33 advertised the control port directly; trust it
-        # over config, since it's the source of truth.
         return host, discovered_port
-
-    raw_port = cfg.get("control-port") or SNAPSERVER_CONTROL_PORT
-    try:
-        return host, int(raw_port)
-    except ValueError as e:
-        raise ConfigError(f"invalid control-port {raw_port!r}") from e
+    return host, default_control_port
 
 
 def resolve_dbus_bus(cfg: dict[str, str]) -> BusType:
     """Return the BusType selected by the ``dbus-bus`` config key.
 
-    Raises ConfigError on an unrecognised value — failing loudly avoids
+    Raises ConfigError on an unrecognised value, failing loudly avoids
     landing the daemon on a different (often more privileged) bus than
     intended through a config typo.
     """
@@ -182,20 +181,23 @@ def main() -> None:
 
     cfg = read_config()
     try:
-        host, control_port = resolve_snapserver_endpoint(cfg)
+        control_port = parse_control_port(cfg)
         bus_type = resolve_dbus_bus(cfg)
     except ConfigError as e:
         logger.critical("%s", e)
         sys.exit(1)
-    logger.info("snapserver %s:%d, %s D-Bus",
-                host, control_port,
+    logger.info("%s D-Bus; snapserver resolved lazily (config host or Zeroconf)",
                 "session" if bus_type == BusType.SESSION else "system")
 
-    # SIGTERM/SIGINT inside run() cancel the main task — asyncio.run()
+    # Resolved lazily in run()'s connect loop so a snapserver that isn't up
+    # yet doesn't abort startup. resolve() -> (host, control_port) | None.
+    resolve = functools.partial(resolve_endpoint, cfg, control_port)
+
+    # SIGTERM/SIGINT inside run() cancel the main task, asyncio.run()
     # then re-raises the CancelledError; suppress both that and the
     # pre-loop KeyboardInterrupt path for a clean exit code.
     with contextlib.suppress(KeyboardInterrupt, asyncio.CancelledError):
-        asyncio.run(run(host, control_port, bus_type))
+        asyncio.run(run(resolve, bus_type))
 
 
 if __name__ == "__main__":

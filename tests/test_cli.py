@@ -109,7 +109,8 @@ def _make_info(port=1705, addresses=("192.168.1.10",)):
 
 
 def _patch_zeroconf(monkeypatch, info_by_type=None):
-    """info_by_type maps service type -> info; anything missing -> None."""
+    """info_by_type maps service type -> info
+    anything missing -> None."""
     info_by_type = info_by_type or {}
     instance = MagicMock()
     instance.get_service_info.side_effect = (
@@ -133,7 +134,7 @@ def test_discover_uses_ctrl_service_when_available(monkeypatch):
 
 def test_discover_falls_back_to_audio_service(monkeypatch):
     # snapcast < 0.33 (e.g. 0.31 in Debian trixie) only advertises
-    # _snapcast._tcp; we get the host but no control port — caller supplies one.
+    # _snapcast._tcp : we get the host but no control port, caller supplies one.
     _patch_zeroconf(monkeypatch, {AUDIO_TYPE: _make_info(port=1704)})
     assert cli.discover_snapserver() == ("192.168.1.10", None)
 
@@ -206,23 +207,35 @@ def _setup_main(monkeypatch, cfg, discovered=None):
     return fake_run
 
 
+# main() now passes run() a lazy resolver + bus_type instead of a resolved
+# host/port, so endpoint assertions go through calling resolve() (which uses
+# the patched discover_snapserver).
+def _resolved(fake_run):
+    return fake_run.await_args.args[0]()
+
+
+def _bus(fake_run):
+    return fake_run.await_args.args[1]
+
+
 def test_main_uses_config_host(monkeypatch):
     fake_run = _setup_main(monkeypatch, {"server": "from-config"})
     cli.main()
-    assert fake_run.await_args.args[0] == "from-config"
+    assert _resolved(fake_run)[0] == "from-config"
 
 
 def test_main_falls_back_to_discovery_when_no_config_host(monkeypatch):
     fake_run = _setup_main(monkeypatch, {}, discovered=("discovered.host", None))
     cli.main()
-    assert fake_run.await_args.args[0] == "discovered.host"
+    assert _resolved(fake_run)[0] == "discovered.host"
 
 
-def test_main_exits_when_no_host_anywhere(monkeypatch):
-    _setup_main(monkeypatch, {}, discovered=None)
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 1
+def test_main_no_host_resolves_to_none(monkeypatch):
+    # No config host and Zeroconf empty is transient now: main() doesn't
+    # exit, resolve() returns None and the connect loop retries.
+    fake_run = _setup_main(monkeypatch, {}, discovered=None)
+    cli.main()
+    assert _resolved(fake_run) is None
 
 
 def test_main_uses_discovered_control_port(monkeypatch):
@@ -231,7 +244,7 @@ def test_main_uses_discovered_control_port(monkeypatch):
         monkeypatch, {"control-port": "9999"}, discovered=("h", 1705)
     )
     cli.main()
-    assert fake_run.await_args.args[1] == 1705
+    assert _resolved(fake_run)[1] == 1705
 
 
 def test_main_audio_fallback_uses_configured_control_port(monkeypatch):
@@ -240,24 +253,24 @@ def test_main_audio_fallback_uses_configured_control_port(monkeypatch):
         monkeypatch, {"control-port": "9999"}, discovered=("h", None)
     )
     cli.main()
-    assert fake_run.await_args.args[1] == 9999
+    assert _resolved(fake_run)[1] == 9999
 
 
 def test_main_uses_default_control_port(monkeypatch):
     fake_run = _setup_main(monkeypatch, {"server": "h"})
     cli.main()
-    assert fake_run.await_args.args[1] == cli.SNAPSERVER_CONTROL_PORT
+    assert _resolved(fake_run)[1] == cli.SNAPSERVER_CONTROL_PORT
 
 
 def test_main_uses_configured_control_port(monkeypatch):
     fake_run = _setup_main(monkeypatch, {"server": "h", "control-port": "9999"})
     cli.main()
-    assert fake_run.await_args.args[1] == 9999
+    assert _resolved(fake_run)[1] == 9999
 
 
 def test_main_invalid_control_port_exits(monkeypatch, caplog):
     # A typo in control-port must abort rather than silently fall back to
-    # the default — same fail-loudly contract as dbus-bus, so the daemon
+    # the default, same fail-loudly contract as dbus-bus, so the daemon
     # never quietly connects to the wrong port.
     _setup_main(monkeypatch, {"server": "h", "control-port": "not-a-number"})
     with (
@@ -272,13 +285,13 @@ def test_main_invalid_control_port_exits(monkeypatch, caplog):
 def test_main_session_bus_is_default(monkeypatch):
     fake_run = _setup_main(monkeypatch, {"server": "h"})
     cli.main()
-    assert fake_run.await_args.args[2] == BusType.SESSION
+    assert _bus(fake_run) == BusType.SESSION
 
 
 def test_main_system_bus_from_config(monkeypatch):
     fake_run = _setup_main(monkeypatch, {"server": "h", "dbus-bus": "system"})
     cli.main()
-    assert fake_run.await_args.args[2] == BusType.SYSTEM
+    assert _bus(fake_run) == BusType.SYSTEM
 
 
 def test_main_invalid_bus_choice_exits(monkeypatch, caplog):
