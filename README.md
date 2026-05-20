@@ -161,6 +161,9 @@ Four Python modules:
 * `SIGUSR1` — `Stream.Control Pause` on the bound stream.
 * `SIGUSR2` — `Stream.Control Stop` on the bound stream.
 
+For inspecting the running bridge, the MPRIS bus and the snapserver
+JSON-RPC channel, see [DEBUGGING.md](DEBUGGING.md).
+
 ## Development
 
 A top-level `Makefile` wraps the day-to-day commands so local dev and
