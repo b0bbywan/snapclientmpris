@@ -1,15 +1,8 @@
-"""snapclientmpris daemon: asyncio bridge between snapserver and MPRIS2.
+"""asyncio bridge: snapserver (python-snapcast) <-> MPRIS2 (dbus-fast).
 
-Connects to a snapserver via python-snapcast (asyncio JSON-RPC) and
-publishes an MPRIS2 interface on D-Bus via dbus-fast. The local audio
-side (snapclient) is expected to run as its own service — typically
-``snapclient.service`` from the Debian ``snapclient`` package, which
-this unit Wants= and orders After=.
-
-Everything runs in a single asyncio event loop — no threads, no GLib.
-The CLI entry point (argparse, config, Zeroconf discovery) lives in
-``snapclientmpris.cli``; this module only exposes the runtime helpers
-and the ``run`` coroutine the CLI dispatches to.
+Single event loop, no threads/GLib. Local audio (snapclient) runs as its
+own unit. CLI/config/discovery live in ``snapclientmpris.cli``; this module
+holds the runtime helpers and the ``run`` coroutine.
 """
 
 from __future__ import annotations
@@ -17,7 +10,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
-from collections.abc import Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine
+from dataclasses import dataclass
 from os import listdir
 
 import snapcast.control
@@ -42,25 +36,69 @@ CONNECT_BACKOFF_MAX = 30.0
 CONNECT_BACKOFF_FACTOR = 1.5
 
 
-async def _reconnect_with_backoff(server: snapcast.control.Snapserver) -> None:
-    """Retry ``server.start()`` forever with exponential backoff on OSError.
-
-    Used out of on_disconnect: the initial connection path is fail-fast
-    (systemd Restart= owns the retry policy at startup), so this helper is
-    reconnect-only. Delay grows by CONNECT_BACKOFF_FACTOR and caps at
-    CONNECT_BACKOFF_MAX so we don't drift to absurd intervals.
-    """
+async def _backoff_schedule() -> AsyncIterator[None]:
+    """Yield once per attempt: first immediately, then after a growing,
+    capped backoff sleep. Callers own each attempt's work and logging."""
     delay = CONNECT_BACKOFF_MIN
+    yield
     while True:
+        await asyncio.sleep(delay)
+        delay = min(delay * CONNECT_BACKOFF_FACTOR, CONNECT_BACKOFF_MAX)
+        yield
+
+
+async def _reconnect_with_backoff(server: snapcast.control.Snapserver) -> None:
+    """Retry ``server.start()`` on an existing server until it reconnects.
+    Warns once, then stays quiet until recovery, to spare the journal."""
+    warned = False
+    async for _ in _backoff_schedule():
         try:
             await server.start()
-            return
         except OSError as e:
-            logger.warning(
-                "snapserver reconnect failed (%s); retrying in %.1fs", e, delay
-            )
-            await asyncio.sleep(delay)
-            delay = min(delay * CONNECT_BACKOFF_FACTOR, CONNECT_BACKOFF_MAX)
+            if not warned:
+                logger.warning(
+                    "snapserver reconnect failed (%s); retrying with backoff", e
+                )
+                warned = True
+            continue
+        logger.info("snapserver reconnected")
+        return
+
+
+async def _connect_with_backoff(
+    loop: asyncio.AbstractEventLoop,
+    resolve: Callable[[], tuple[str, int] | None],
+) -> tuple[snapcast.control.Snapserver, str]:
+    """Resolve, construct the Snapserver, and connect, retrying with backoff;
+    return the connected ``(server, host)``. ``resolve`` does blocking
+    Zeroconf I/O (hence the executor) and returns the endpoint or ``None``.
+    Warns once, then stays quiet, to spare the journal."""
+    warned = False
+    async for _ in _backoff_schedule():
+        endpoint = await loop.run_in_executor(None, resolve)
+        if endpoint is None:
+            if not warned:
+                logger.warning(
+                    "snapserver not found (no configured host, Zeroconf empty); "
+                    "retrying with backoff"
+                )
+                warned = True
+            continue
+        host, control_port = endpoint
+        # reconnect=False: we own the retry policy, not python-snapcast.
+        server = snapcast.control.Snapserver(loop, host, control_port, reconnect=False)
+        try:
+            await server.start()
+        except OSError as e:
+            if not warned:
+                logger.warning(
+                    "snapserver connect failed (%s); retrying with backoff", e
+                )
+                warned = True
+            continue
+        logger.info("connected to snapserver at %s:%d", host, control_port)
+        return server, host
+    raise AssertionError("unreachable: _backoff_schedule never ends")
 
 
 def local_mac_addresses() -> list[str]:
@@ -95,12 +133,8 @@ def client_stream(
     server: snapcast.control.Snapserver,
     client: snapcast.control.Snapclient | None,
 ) -> snapcast.control.Snapstream | None:
-    """Resolve the stream currently bound to ``client``.
-
-    python-snapcast >= 2.3.8 exposes ``Snapclient.stream`` directly; on
-    Debian trixie we ship against 2.3.7, where you must walk
-    ``client.group`` -> ``group.stream`` (stream id) -> ``server.stream(id)``.
-    """
+    """Resolve the stream bound to ``client``. We walk client->group->stream
+    by id (python-snapcast 2.3.7 on trixie has no ``Snapclient.stream``)."""
     if client is None:
         return None
     g = client.group
@@ -110,15 +144,9 @@ def client_stream(
 
 
 def playback_status(stream: snapcast.control.Snapstream | None) -> str:
-    """Derive the MPRIS PlaybackStatus for ``stream``.
-
-    Prefer the source's explicit MPRIS state (``properties.playbackStatus``,
-    populated by metadata scripts on sources like Spotifyd / Librespot)
-    when present; fall back to mapping snapserver's ``stream.status``.
-    An idle snapserver stream means "no audio flowing", not "track is
-    paused mid-play", so it maps to Stopped — Paused is only reported
-    when the source explicitly says so.
-    """
+    """MPRIS PlaybackStatus for ``stream``. Prefer the source's explicit
+    ``properties.playbackStatus``; else map ``stream.status`` (idle->Stopped,
+    so Paused only ever comes from the source saying so)."""
     if stream is None:
         return "Stopped"
     explicit = (stream.properties or {}).get("playbackStatus")
@@ -130,19 +158,10 @@ def playback_status(stream: snapcast.control.Snapstream | None) -> str:
 def stream_metadata(
     host: str, stream: snapcast.control.Snapstream | None
 ) -> dict | None:
-    """Compute the MPRIS Metadata dict for ``stream``, or ``None`` if there
-    is no stream — callers should leave existing metadata in place rather
-    than clearing it in that case.
-
-    Adds two ``snapcast:`` namespaced custom keys (MPRIS spec explicitly
-    allows player-specific keys in Metadata): ``snapcast:stream`` is the
-    snapserver stream identifier (e.g. ``SpotifyHD`` / ``MPD``), and
-    ``snapcast:streamStatus`` is the raw snapserver stream status
-    (``playing`` / ``idle`` / ...). Together they let an observer
-    distinguish, for instance, an attached-but-idle MPD source from a
-    SpotifyHD source actually producing audio — info that doesn't
-    survive the MPRIS PlaybackStatus mapping.
-    """
+    """MPRIS Metadata dict for ``stream``, or ``None`` if no stream (caller
+    keeps existing metadata, doesn't clear). Adds custom ``snapcast:stream``
+    and ``snapcast:streamStatus`` keys (raw id + status the PlaybackStatus
+    mapping would otherwise lose)."""
     if stream is None:
         return None
     url = f"snapcast://{host}/{stream.identifier}"
@@ -153,14 +172,8 @@ def stream_metadata(
 
 
 def stream_capabilities(stream: snapcast.control.Snapstream | None) -> dict:
-    """Extract MPRIS-relevant capability flags from ``stream.properties``.
-
-    Snapserver streams report ``canPlay`` / ``canPause`` / ``canGoNext`` /
-    ``canGoPrevious`` / ``canSeek`` / ``canControl`` in ``stream.properties``;
-    we mirror them to the matching MPRIS ``Can*`` properties so clients
-    (gnome-music, KDE plasma, playerctl) only enable the buttons the source
-    actually supports.
-    """
+    """Mirror the stream's ``can*`` properties to MPRIS ``Can*`` flags, so
+    clients only enable the buttons the source supports."""
     caps = {
         "CanPlay": False,
         "CanPause": False,
@@ -184,13 +197,8 @@ async def control_stream(
     stream: snapcast.control.Snapstream | None,
     command: str,
 ) -> None:
-    """Forward an MPRIS-style command to the snapserver stream's source.
-
-    Snapserver's ``Stream.Control`` JSON-RPC method relays commands
-    (``play``, ``pause``, ``playPause``, ``stop``, ``next``, ``previous``,
-    ``seek``, ``setPosition``) to the source process. No-op when there is
-    no stream bound or the stream reports ``canControl=false``.
-    """
+    """Forward an MPRIS command to the stream's source via Stream.Control.
+    No-op with no stream or ``canControl=false``."""
     if stream is None:
         return
     props = stream.properties or {}
@@ -202,170 +210,194 @@ async def control_stream(
 
 
 # --- Daemon ------------------------------------------------------------
-async def run(host: str, control_port: int, bus_type: BusType) -> None:
-    loop = asyncio.get_running_loop()
+@dataclass(frozen=True)
+class Connection:
+    """``server`` + ``host``, one lifecycle. Bundled so a single
+    ``conn is None`` check narrows both and ``host`` can't go missing."""
 
-    # reconnect=False: python-snapcast's built-in retry is a fixed 5 s delay
-    # with no cap on attempts. We manage reconnection ourselves out of
-    # on_disconnect to get exponential backoff (CONNECT_BACKOFF_*).
-    server = snapcast.control.Snapserver(loop, host, control_port, reconnect=False)
-    await server.start()
-    logger.info("connected to snapserver at %s:%d", host, control_port)
+    server: snapcast.control.Snapserver
+    host: str
 
-    # The local snapclient is started by its own systemd unit and may not
-    # have registered yet when we connect. We attempt one initial match,
-    # then rely on Snapserver.set_new_client_callback below to pick it up
-    # whenever it eventually joins.
-    macs = local_mac_addresses()
-    client = identify_client(server, macs)
-    if client is None:
-        logger.info("local MAC %s not in snapserver roster yet; waiting "
-                    "for snapclient to register", macs)
 
-    def refresh() -> None:
+class MprisBridge:
+    """Bridges a snapserver connection to the exported MPRIS player.
+
+    Two independent lifecycles, hence two attributes: ``conn`` is set once
+    and kept; ``client`` comes and goes (nulled on disconnect, re-identified
+    on reconnect or late registration). Callbacks guard on whichever they
+    need; pre-connection MPRIS calls are no-ops.
+    """
+
+    def __init__(
+        self, loop: asyncio.AbstractEventLoop, macs: list[str]
+    ) -> None:
+        self.loop = loop
+        self.macs = macs
+        self.conn: Connection | None = None
+        self.client: snapcast.control.Snapclient | None = None
+        self.reconnect_task: asyncio.Task | None = None
+        # Strong-reference fire-and-forget tasks so the event loop's weak
+        # refs don't let them be GC'd mid-execution (asyncio docs warn).
+        self.bg_tasks: set[asyncio.Task] = set()
+        self.player = MediaPlayer2Player(
+            on_play=lambda: self.control("play"),
+            on_pause=lambda: self.control("pause"),
+            on_play_pause=lambda: self.control("playPause"),
+            on_stop=lambda: self.control("stop"),
+            on_next=lambda: self.control("next"),
+            on_previous=lambda: self.control("previous"),
+            on_volume_set=self.on_volume_set,
+        )
+
+    def schedule(self, coro: Coroutine) -> asyncio.Task:
+        task = self.loop.create_task(coro)
+        self.bg_tasks.add(task)
+        task.add_done_callback(self.bg_tasks.discard)
+        return task
+
+    # --- MPRIS <- snapserver (state push) ------------------------------
+    def refresh(self) -> None:
         try:
-            if client is None:
+            if self.conn is None or self.client is None:
                 return
-            s = client_stream(server, client)
+            s = client_stream(self.conn.server, self.client)
             logger.debug("refresh: client.volume=%s stream=%s status=%s",
-                         client.volume,
+                         self.client.volume,
                          s.identifier if s is not None else None,
                          s.status if s is not None else None)
-            md = stream_metadata(host, s)
+            md = stream_metadata(self.conn.host, s)
             if md is not None:
-                player.update_metadata(md)
-            player.update_playback_status(playback_status(s))
-            player.update_capabilities(stream_capabilities(s))
-            if client.volume is not None:
-                player.update_volume(client.volume / 100.0)
+                self.player.update_metadata(md)
+            self.player.update_playback_status(playback_status(s))
+            self.player.update_capabilities(stream_capabilities(s))
+            if self.client.volume is not None:
+                self.player.update_volume(self.client.volume / 100.0)
         except Exception:
             logger.exception("refresh failed")
 
-    # Strong-reference fire-and-forget tasks so the event loop's weak refs
-    # don't let them be GC'd mid-execution (asyncio docs explicitly warn).
-    bg_tasks: set[asyncio.Task] = set()
-
-    def schedule(coro: Coroutine) -> None:
-        task = loop.create_task(coro)
-        bg_tasks.add(task)
-        task.add_done_callback(bg_tasks.discard)
-
-    async def set_volume(percent: int) -> None:
-        if client is None:
+    # --- MPRIS -> snapserver (commands) --------------------------------
+    async def set_volume(self, percent: int) -> None:
+        if self.client is None:
             return
-        await client.set_volume(percent)
-        refresh()
+        await self.client.set_volume(percent)
+        self.refresh()
 
-    def control(command: str) -> None:
-        # Delegates MPRIS playback commands to the snapserver stream's
-        # source (Spotifyd / Librespot / etc.) via Stream.Control. With
-        # multiple snapclients on the same stream, this affects every
-        # listener — that's the intended multi-room semantic.
-        schedule(control_stream(server, client_stream(server, client), command))
+    def control(self, command: str) -> None:
+        # Affects every listener on the stream (intended multi-room semantic).
+        if self.conn is None:
+            return
+        self.schedule(control_stream(
+            self.conn.server,
+            client_stream(self.conn.server, self.client),
+            command,
+        ))
 
-    def on_volume_set(v: float) -> None:
+    def on_volume_set(self, v: float) -> None:
         # MPRIS Volume is a float 0.0-1.0; snapserver expects 0-100 int.
-        schedule(set_volume(int(round(v * 100))))
+        self.schedule(self.set_volume(int(round(v * 100))))
 
-    player = MediaPlayer2Player(
-        on_play=lambda: control("play"),
-        on_pause=lambda: control("pause"),
-        on_play_pause=lambda: control("playPause"),
-        on_stop=lambda: control("stop"),
-        on_next=lambda: control("next"),
-        on_previous=lambda: control("previous"),
-        on_volume_set=on_volume_set,
-    )
+    # --- snapserver callbacks ------------------------------------------
+    def wire_entity_callbacks(self) -> None:
+        # Hook stream (property/metadata) and group (volume/mute/rebind, where
+        # snapcast routes client volume) updates. Re-run on every sync: freshly
+        # appeared streams/groups carry none of our callbacks.
+        if self.conn is None:
+            return
+        for s in self.conn.server.streams:
+            s.set_callback(lambda _stream: self.refresh())
+        for g in self.conn.server.groups:
+            g.set_callback(lambda _group: self.refresh())
 
-    bus = await MessageBus(bus_type=bus_type).connect()
-    bus.export(ROOT_PATH, MediaPlayer2())
-    bus.export(ROOT_PATH, player)
-    await bus.request_name(BUS_NAME)
-    logger.info("D-Bus name acquired: %s", BUS_NAME)
+    def on_server_update(self) -> None:
+        self.wire_entity_callbacks()
+        self.refresh()
 
-    # Subscribe to every granularity python-snapcast exposes:
-    #  * per-stream callback fires on stream property/metadata updates;
-    #  * per-group callback fires on volume / mute / stream rebind for
-    #    any client in the group (Snapclient.update_volume routes the
-    #    notification through its group, not the client itself);
-    #  * server on-update fires on full state sync and new-stream events
-    #    — we re-wire stream/group callbacks here because streams added
-    #    after startup have none of ours;
-    #  * server new-client callback recovers the snapclient identification
-    #    if it registered after we connected.
-    def wire_entity_callbacks() -> None:
-        for s in server.streams:
-            s.set_callback(lambda _stream: refresh())
-        for g in server.groups:
-            g.set_callback(lambda _group: refresh())
-
-    def on_server_update() -> None:
-        wire_entity_callbacks()
-        refresh()
-
-    def on_new_client(new_client: snapcast.control.Snapclient) -> None:
-        nonlocal client
-        if client is None and new_client.identifier in macs:
-            client = new_client
+    def on_new_client(self, new_client: snapcast.control.Snapclient) -> None:
+        # Catch a snapclient that registered late (separate unit).
+        if self.client is None and new_client.identifier in self.macs:
+            self.client = new_client
             logger.info("snapclient registered: %s", new_client.identifier)
-        refresh()
+        self.refresh()
 
-    reconnect_task: asyncio.Task | None = None
-
-    def on_disconnect(exception: Exception | None) -> None:
-        # snapserver dropped. We can't trust the last metadata / playback
-        # state we observed — snapserver may come back with a clean slate.
-        # Clear MPRIS back to "nothing playing" until on_connect re-syncs,
-        # then schedule a backoff-driven reconnect (python-snapcast's own
-        # reconnect is disabled — see Snapserver(reconnect=False) above).
-        nonlocal client, reconnect_task
+    def on_disconnect(self, exception: Exception | None) -> None:
+        # Stale state is untrustworthy: clear MPRIS until on_connect re-syncs,
+        # then drive our own reconnect (Snapserver(reconnect=False)).
+        if self.conn is None:
+            return
         logger.info("snapserver disconnected (%s); clearing MPRIS state", exception)
-        client = None
-        player.update_playback_status("Stopped")
-        player.update_metadata({})
-        player.update_capabilities({
+        self.client = None
+        self.player.update_playback_status("Stopped")
+        self.player.update_metadata({})
+        self.player.update_capabilities({
             "CanPlay": False, "CanPause": False,
             "CanGoNext": False, "CanGoPrevious": False, "CanSeek": False,
         })
-        if reconnect_task is None or reconnect_task.done():
-            reconnect_task = schedule_reconnect()
+        if self.reconnect_task is None or self.reconnect_task.done():
+            self.reconnect_task = self.schedule(
+                _reconnect_with_backoff(self.conn.server)
+            )
 
-    def schedule_reconnect() -> asyncio.Task:
-        task = loop.create_task(_reconnect_with_backoff(server))
-        bg_tasks.add(task)
-        task.add_done_callback(bg_tasks.discard)
-        return task
-
-    def on_connect() -> None:
-        # python-snapcast just ran synchronize() against fresh status.
-        # Existing Snapstream/Snapclient/Snapgroup instances with matching
-        # IDs are preserved (and keep our callbacks); newly-appeared ones
-        # are fresh objects with no callback. Re-identify our client and
-        # re-wire entity callbacks to cover both cases.
-        nonlocal client
+    def on_connect(self) -> None:
+        # Post-synchronize(): matching-id entities keep our callbacks, new
+        # ones don't. Re-identify the client and re-wire to cover both.
+        if self.conn is None:
+            return
         logger.info("snapserver (re)connected; re-syncing MPRIS state")
-        client = identify_client(server, macs)
-        wire_entity_callbacks()
-        refresh()
+        self.client = identify_client(self.conn.server, self.macs)
+        self.wire_entity_callbacks()
+        self.refresh()
 
-    server.set_on_update_callback(on_server_update)
-    server.set_new_client_callback(on_new_client)
-    server.set_on_disconnect_callback(on_disconnect)
-    server.set_on_connect_callback(on_connect)
-    wire_entity_callbacks()
+    # --- lifecycle -----------------------------------------------------
+    async def connect(
+        self, resolve: Callable[[], tuple[str, int] | None]
+    ) -> None:
+        """Connect (retrying with backoff), wire callbacks, seed MPRIS state."""
+        server, host = await _connect_with_backoff(self.loop, resolve)
+        self.conn = Connection(server, host)
 
-    refresh()  # seed
+        self.client = identify_client(server, self.macs)
+        if self.client is None:
+            logger.info("local MAC %s not in snapserver roster yet; waiting "
+                        "for snapclient to register", self.macs)
 
-    # SIGUSR1 → pause, SIGUSR2 → stop. Matches the upstream signal contract;
-    # both are now forwarded to the snapserver stream's source rather than
-    # toggling local mute.
-    loop.add_signal_handler(signal.SIGUSR1, lambda: control("pause"))
-    loop.add_signal_handler(signal.SIGUSR2, lambda: control("stop"))
+        server.set_on_update_callback(self.on_server_update)
+        server.set_new_client_callback(self.on_new_client)
+        server.set_on_disconnect_callback(self.on_disconnect)
+        server.set_on_connect_callback(self.on_connect)
+        self.wire_entity_callbacks()
+        self.refresh()  # seed
 
-    # Shutdown via task cancellation: SIGTERM/SIGINT cancel the running
-    # task, the CancelledError raised by the idle await below unwinds
-    # through the finally clause for orderly teardown. This is the
-    # modern asyncio pattern — no Event/flag plumbing required.
+    def shutdown(self) -> None:
+        logger.info("shutting down")
+        if self.reconnect_task is not None and not self.reconnect_task.done():
+            self.reconnect_task.cancel()
+        if self.conn is not None:
+            self.conn.server.stop()
+
+
+async def run(
+    resolve: Callable[[], tuple[str, int] | None],
+    bus_type: BusType,
+) -> None:
+    loop = asyncio.get_running_loop()
+    bridge = MprisBridge(loop, local_mac_addresses())
+
+    # Claim the D-Bus name before connecting: with Type=dbus that marks the
+    # unit started, so we come up even with no snapserver yet.
+    bus = await MessageBus(bus_type=bus_type).connect()
+    bus.export(ROOT_PATH, MediaPlayer2())
+    bus.export(ROOT_PATH, bridge.player)
+    await bus.request_name(BUS_NAME)
+    logger.info("D-Bus name acquired: %s", BUS_NAME)
+
+    await bridge.connect(resolve)
+
+    # SIGUSR1/USR2 → pause/stop (upstream contract), forwarded to the source.
+    loop.add_signal_handler(signal.SIGUSR1, lambda: bridge.control("pause"))
+    loop.add_signal_handler(signal.SIGUSR2, lambda: bridge.control("stop"))
+
+    # SIGTERM/SIGINT cancel this task; the CancelledError from the idle await
+    # below unwinds through finally for orderly teardown.
     task = asyncio.current_task()
     assert task is not None
     loop.add_signal_handler(signal.SIGTERM, task.cancel)
@@ -374,7 +406,4 @@ async def run(host: str, control_port: int, bus_type: BusType) -> None:
     try:
         await asyncio.Event().wait()
     finally:
-        logger.info("shutting down")
-        if reconnect_task is not None and not reconnect_task.done():
-            reconnect_task.cancel()
-        server.stop()
+        bridge.shutdown()
