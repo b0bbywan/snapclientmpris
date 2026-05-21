@@ -7,7 +7,7 @@ PYTHON  ?= python3
 VERSION := $(PYTHON) scripts/version.py
 
 .PHONY: version deb-version check-tag sync-deb \
-        lint lint-ruff lint-mypy test build deb clean
+        lint lint-ruff lint-mypy test build sdist deb clean
 
 # --- version helpers ---------------------------------------------------
 
@@ -49,6 +49,10 @@ test:
 
 build:
 	$(PYTHON) -m build
+
+# Source distribution only (the tar.gz attached to the GitHub release).
+sdist:
+	$(PYTHON) -m build --sdist
 
 # Builds the .deb via dpkg-buildpackage. Requires a Debian toolchain
 # (debhelper, dh-python, devscripts, etc.) — not available on Fedora;
