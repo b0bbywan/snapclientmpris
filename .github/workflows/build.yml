@@ -33,6 +33,19 @@ jobs:
       - name: Pytest
         if: always()
         run: make test
+      # Build the sdist tar.gz here (Python + the package are already set up)
+      # and hand it to the release job as an artifact, tag pushes only.
+      - name: Build sdist
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          pip install build
+          make sdist
+      - uses: actions/upload-artifact@v6
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: snapclientmpris-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
 
   deb:
     runs-on: ubuntu-latest
@@ -84,11 +97,14 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: snapclientmpris-deb
+          pattern: snapclientmpris-*
           path: dist/
+          merge-multiple: true
       - uses: softprops/action-gh-release@v3
         with:
-          files: dist/*.deb
+          files: |
+            dist/*.deb
+            dist/*.tar.gz
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
 
