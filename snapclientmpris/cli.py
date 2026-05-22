@@ -33,6 +33,12 @@ CONFIG_PATHS = [
 
 SNAPSERVER_CONTROL_PORT = 1705
 
+# Zeroconf service types advertised by snapserver. The instance name is
+# always "Snapcast." + the service type.
+CTRL_SERVICE_TYPE = "_snapcast-ctrl._tcp.local."  # JSON-RPC control (>= 0.33)
+AUDIO_SERVICE_TYPE = "_snapcast._tcp.local."  # audio stream (all versions)
+HTTP_SERVICE_TYPE = "_snapcast-http._tcp.local."  # snapweb UI
+
 
 class ConfigError(Exception):
     """Raised when the daemon can't start because of invalid / missing config."""
@@ -68,10 +74,10 @@ def read_config() -> dict[str, str]:
 
 
 def _lookup_service(
-    zc: Zeroconf, service_type: str, instance_name: str
+    zc: Zeroconf, service_type: str
 ) -> tuple[str | None, int | None]:
-    """Resolve one service instance to (host, port), or (None, None)."""
-    info = zc.get_service_info(service_type, instance_name, timeout=3000)
+    """Resolve the "Snapcast" instance of a service type to (host, port)."""
+    info = zc.get_service_info(service_type, f"Snapcast.{service_type}", timeout=3000)
     if info is None or info.port is None:
         return None, None
     for addr in info.parsed_addresses(IPVersion.V4Only):
@@ -92,24 +98,50 @@ def discover_snapserver() -> tuple[str, int | None] | None:
     """
     zc = Zeroconf()
     try:
-        host, port = _lookup_service(
-            zc,
-            "_snapcast-ctrl._tcp.local.",
-            "Snapcast._snapcast-ctrl._tcp.local.",
-        )
+        host, port = _lookup_service(zc, CTRL_SERVICE_TYPE)
         if host is not None:
             return host, port
 
-        host, _ = _lookup_service(
-            zc,
-            "_snapcast._tcp.local.",
-            "Snapcast._snapcast._tcp.local.",
-        )
+        host, _ = _lookup_service(zc, AUDIO_SERVICE_TYPE)
         if host is not None:
             return host, None
         return None
     finally:
         zc.close()
+
+
+def discover_snapweb() -> tuple[str, int] | None:
+    """Return ``(host, http_port)`` for the snapweb UI, or ``None``.
+
+    snapserver advertises its built-in web UI as ``_snapcast-http._tcp``,
+    which carries the actual HTTP port (default 1780).
+    """
+    zc = Zeroconf()
+    try:
+        host, port = _lookup_service(zc, HTTP_SERVICE_TYPE)
+        if host is not None and port is not None:
+            return host, port
+        return None
+    finally:
+        zc.close()
+
+
+def run_discovery() -> None:
+    """Probe Zeroconf for snapserver + snapweb and print findings to stdout.
+
+    Diagnostic one-shot for ``--discover``: never starts the daemon.
+    """
+    server = discover_snapserver()
+    web = discover_snapweb()
+    if server is None and web is None:
+        print("No Snapcast services found on the local network.")
+        return
+    if server is not None:
+        host, port = server
+        print(f"snapserver:  tcp://{host}" + (f":{port}" if port else ""))
+    if web is not None:
+        host, port = web
+        print(f"snapweb:     http://{host}:{port}")
 
 
 def parse_control_port(cfg: dict[str, str]) -> int:
@@ -170,6 +202,11 @@ def main() -> None:
                      "Snapclient itself runs as its own service."),
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="enable debug logging")
+    parser.add_argument(
+        "--discover",
+        action="store_true",
+        help="probe the network for snapserver and snapweb, print the result and exit",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -178,6 +215,10 @@ def main() -> None:
     )
     if not args.verbose:
         logging.getLogger("snapcast").setLevel(logging.WARNING)
+
+    if args.discover:
+        run_discovery()
+        return
 
     cfg = read_config()
     try:
