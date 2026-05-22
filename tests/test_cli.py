@@ -97,8 +97,9 @@ def test_read_config_oserror_logs_and_continues(monkeypatch, tmp_path, caplog):
 
 
 # --- discover_snapserver -----------------------------------------------
-CTRL_TYPE = "_snapcast-ctrl._tcp.local."
-AUDIO_TYPE = "_snapcast._tcp.local."
+CTRL_TYPE = cli.CTRL_SERVICE_TYPE
+AUDIO_TYPE = cli.AUDIO_SERVICE_TYPE
+HTTP_TYPE = cli.HTTP_SERVICE_TYPE
 
 
 def _make_info(port=1705, addresses=("192.168.1.10",)):
@@ -197,6 +198,54 @@ def test_discover_closes_zeroconf_on_exception(monkeypatch):
     instance.close.assert_called_once()
 
 
+# --- discover_snapweb --------------------------------------------------
+def test_discover_snapweb_found(monkeypatch):
+    _patch_zeroconf(monkeypatch, {HTTP_TYPE: _make_info(port=1780)})
+    assert cli.discover_snapweb() == ("192.168.1.10", 1780)
+
+
+def test_discover_snapweb_none(monkeypatch):
+    _patch_zeroconf(monkeypatch)
+    assert cli.discover_snapweb() is None
+
+
+def test_discover_snapweb_skips_unspecified_address(monkeypatch):
+    _patch_zeroconf(monkeypatch, {HTTP_TYPE: _make_info(port=1780, addresses=["0.0.0.0"])})
+    assert cli.discover_snapweb() is None
+
+
+def test_discover_snapweb_closes_zeroconf(monkeypatch):
+    instance = _patch_zeroconf(monkeypatch)
+    cli.discover_snapweb()
+    instance.close.assert_called_once()
+
+
+# --- run_discovery -----------------------------------------------------
+def test_run_discovery_prints_both(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "discover_snapserver", lambda: ("192.168.1.10", 1705))
+    monkeypatch.setattr(cli, "discover_snapweb", lambda: ("192.168.1.10", 1780))
+    cli.run_discovery()
+    out = capsys.readouterr().out
+    assert "snapserver:  tcp://192.168.1.10:1705" in out
+    assert "snapweb:     http://192.168.1.10:1780" in out
+
+
+def test_run_discovery_audio_only_omits_port(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "discover_snapserver", lambda: ("192.168.1.10", None))
+    monkeypatch.setattr(cli, "discover_snapweb", lambda: None)
+    cli.run_discovery()
+    out = capsys.readouterr().out
+    assert "snapserver:  tcp://192.168.1.10\n" in out
+    assert "snapweb" not in out
+
+
+def test_run_discovery_nothing_found(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "discover_snapserver", lambda: None)
+    monkeypatch.setattr(cli, "discover_snapweb", lambda: None)
+    cli.run_discovery()
+    assert "No Snapcast services found" in capsys.readouterr().out
+
+
 # --- main --------------------------------------------------------------
 def _setup_main(monkeypatch, cfg, discovered=None):
     monkeypatch.setattr(cli, "read_config", lambda: cfg)
@@ -292,6 +341,18 @@ def test_main_system_bus_from_config(monkeypatch):
     fake_run = _setup_main(monkeypatch, {"server": "h", "dbus-bus": "system"})
     cli.main()
     assert _bus(fake_run) == BusType.SYSTEM
+
+
+def test_main_discover_flag_prints_and_skips_run(monkeypatch, capsys):
+    fake_run = _setup_main(monkeypatch, {})
+    monkeypatch.setattr(cli, "discover_snapserver", lambda: ("192.168.1.10", 1705))
+    monkeypatch.setattr(cli, "discover_snapweb", lambda: ("192.168.1.10", 1780))
+    monkeypatch.setattr(sys, "argv", ["snapclientmpris", "--discover"])
+    cli.main()
+    out = capsys.readouterr().out
+    assert "snapserver:  tcp://192.168.1.10:1705" in out
+    assert "snapweb:     http://192.168.1.10:1780" in out
+    fake_run.assert_not_awaited()
 
 
 def test_main_invalid_bus_choice_exits(monkeypatch, caplog):

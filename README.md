@@ -104,6 +104,28 @@ dbus-bus = session
 
 ```
 
+## Usage
+
+Normally the daemon is started by systemd (see Installation). Run it
+directly for debugging:
+
+```sh
+snapclientmpris -v          # run in the foreground with debug logging
+snapclientmpris --discover  # probe the network for Snapcast services and exit
+```
+
+`--discover` performs a one-shot Zeroconf lookup and prints the
+resolved IP and port of the snapserver control socket and the snapweb
+UI, without starting the daemon:
+
+```
+snapserver:  tcp://192.168.1.21:1705
+snapweb:     http://192.168.1.21:1780
+```
+
+(IPv4 only. A snapserver < 0.33 that advertises only `_snapcast._tcp`
+shows up as `snapserver: tcp://<ip>` without a port.)
+
 ## Architecture
 
 ```
