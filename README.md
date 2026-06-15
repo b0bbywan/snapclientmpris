@@ -52,7 +52,10 @@ to `snapclientmpris` to better reflect what the daemon does.
 
 ## Install
 
-From the Odio APT repository:
+### From the Odio APT repository (recommended)
+
+The `.deb` is the turn-key route: it wires up the systemd units, the
+D-Bus policy, the config template and the `snapclient` dependency.
 
 ```sh
 curl -fsSL https://apt.odio.love/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/odio.gpg
@@ -87,6 +90,49 @@ In system mode the daemon owns `org.mpris.MediaPlayer2.snapcast` on
 the system bus; the package ships the matching D-Bus policy at
 `/usr/share/dbus-1/system.d/org.mpris.MediaPlayer2.snapcast.conf`
 (grants `_snapclient` ownership, allows any local user to talk to it).
+
+### From PyPI
+
+Final releases are published to [PyPI](https://pypi.org/p/snapclientmpris),
+prereleases to [TestPyPI](https://test.pypi.org/p/snapclientmpris):
+
+```sh
+pipx install snapclientmpris        # or: pip install --user snapclientmpris
+```
+
+The PyPI distribution ships **only** the `snapclientmpris` daemon, not
+the systemd units, D-Bus policy or config template the `.deb` installs.
+The daemon runs without a config file (Zeroconf auto-discovery), and
+`snapclient` itself still has to come from your distro. To run it under
+systemd, drop in a user unit pointing at the pipx/pip binary:
+
+```sh
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/snapclientmpris.service <<'EOF'
+[Unit]
+Description=Snapcast MPRIS2 bridge
+After=network-online.target snapclient.service
+Wants=network-online.target snapclient.service
+
+[Service]
+Type=dbus
+BusName=org.mpris.MediaPlayer2.snapcast
+ExecStart=%h/.local/bin/snapclientmpris
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable --now snapclientmpris.service
+```
+
+Adjust `ExecStart` if `snapclientmpris` lives elsewhere (`which
+snapclientmpris`). Unlike the APT install there is no D-Bus session
+activation, so the unit (or a manual foreground run) is what starts the
+bridge.
 
 ## Configuration
 
@@ -219,12 +265,18 @@ Debian trixie or a derivative produces the `.deb` (wraps
 `.github/workflows/build.yml` runs:
 
 * **lint** on every PR to `master` — `ruff`, `mypy` and `pytest`.
+* **build** on every PR and on `v*` tags — `make build` (sdist +
+  wheel), uploaded as an artifact for the release and publish jobs.
 * **deb** on every PR and on `v*` tags — `dpkg-buildpackage` inside a
   `debian:trixie` container; on tags, syncs `debian/changelog` with
   the tag (rewriting `-rc/-beta/-alpha` to Debian-sortable `~rc/...`
   suffixes) before building.
-* **release** on `v*` tags — attaches the `.deb` to the GitHub
-  release, flagging `-rc/-beta/-alpha` tags as prereleases.
+* **release** on `v*` tags — attaches the `.deb`, sdist and wheel to
+  the GitHub release, flagging `-rc/-beta/-alpha` tags as prereleases.
+* **publish-to-testpypi** on `v*` tags — uploads sdist + wheel to
+  TestPyPI via trusted publishing (all tags, prereleases included).
+* **publish-to-pypi** on final `v*` tags only — uploads to PyPI via
+  trusted publishing; `-rc/-beta/-alpha` tags stop at TestPyPI.
 * **notify-apt-repo** on `v*` tags — dispatches to
   [`b0bbywan/odio-apt-repo`](https://github.com/b0bbywan/odio-apt-repo)
   so the new `.deb` is picked up by `apt.odio.love`.
