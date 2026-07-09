@@ -13,7 +13,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
@@ -38,7 +38,7 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
@@ -46,7 +46,7 @@ jobs:
         run: |
           pip install build
           make build
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: snapclientmpris-dist
           path: dist/*
@@ -67,7 +67,7 @@ jobs:
             build-essential debhelper dh-python pybuild-plugin-pyproject \
             python3 python3-setuptools devscripts
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -87,7 +87,7 @@ jobs:
           mv ../snapclientmpris_*.deb dist/
           ls -lh dist/
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: snapclientmpris-deb
           path: dist/*.deb
