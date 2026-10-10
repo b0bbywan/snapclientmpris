@@ -1,3 +1,50 @@
+snapclientmpris (1.2.2) unstable; urgency=medium
+
+  * Fix the bridge binding to a stale snapserver roster entry on hosts
+    with several network interfaces up (for example wifi and ethernet):
+    MPRIS showed another stream and volume changes had no effect. A
+    connected entry is now preferred, and the bridge rebinds when one of
+    its entries connects, disconnects, registers or is deleted from the
+    server.
+
+ -- Mathieu Réquillart <mathieu.requillart@gmail.com>  Sat, 10 Oct 2026 19:28:26 +0200
+
+snapclientmpris (1.2.1) unstable; urgency=medium
+
+  * No change to the daemon. First release also published on PyPI.
+  * Document the PyPI installation and the manual systemd user unit
+    setup in the README.
+
+ -- Mathieu Réquillart <mathieu.requillart@gmail.com>  Tue, 16 Jun 2026 00:30:48 +0200
+
+snapclientmpris (1.2.0) unstable; urgency=medium
+
+  * Add the --discover flag: a one-shot Zeroconf lookup that prints the
+    snapserver control endpoint and the snapweb URL, then exits.
+
+ -- Mathieu Réquillart <mathieu.requillart@gmail.com>  Fri, 22 May 2026 18:57:03 +0200
+
+snapclientmpris (1.1.2) unstable; urgency=medium
+
+  * Claim the MPRIS D-Bus name before connecting to the snapserver, and
+    retry discovery and connection with backoff instead of exiting when
+    no server is found. The unit no longer fails at boot when the
+    snapserver is not up yet.
+  * Add a debugging guide (DEBUGGING.md).
+
+ -- Mathieu Réquillart <mathieu.requillart@gmail.com>  Thu, 21 May 2026 14:35:01 +0200
+
+snapclientmpris (1.1.1) unstable; urgency=medium
+
+  * Reconnect to the snapserver with exponential backoff after a
+    disconnect, and clear the MPRIS state until it is back.
+  * Ship a D-Bus session activation file, so MPRIS clients can start the
+    bridge on demand through systemd --user.
+  * Fix the systemd units: Type=dbus with BusName, and the user unit no
+    longer starts for root or system users.
+
+ -- Mathieu Réquillart <mathieu.requillart@gmail.com>  Tue, 19 May 2026 22:48:39 +0200
+
 snapclientmpris (1.1.0) unstable; urgency=medium
 
   * Initial Debian packaging for the b0bbywan APT repository, forked
