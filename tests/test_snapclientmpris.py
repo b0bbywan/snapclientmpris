@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import snapclientmpris.snapclientmpris as scm
 from snapclientmpris.snapclientmpris import (
+    Connection,
+    MprisBridge,
     _connect_with_backoff,
     client_stream,
     control_stream,
@@ -185,21 +187,138 @@ def test_control_stream_forwards_command():
 
 
 # --- identify_client ---------------------------------------------------
+def fake_client(identifier: str, connected: bool = True, stream: str = "s1") -> SimpleNamespace:
+    callbacks: list = []
+    return SimpleNamespace(
+        identifier=identifier,
+        connected=connected,
+        volume=100,
+        group=SimpleNamespace(stream=stream),
+        callbacks=callbacks,
+        set_callback=callbacks.append,
+    )
+
+
 def test_identify_client_matches_first_mac():
-    c1 = SimpleNamespace(identifier="aa:bb:cc:dd:ee:ff")
-    c2 = SimpleNamespace(identifier="11:22:33:44:55:66")
+    c1 = fake_client("aa:bb:cc:dd:ee:ff")
+    c2 = fake_client("11:22:33:44:55:66")
     server = SimpleNamespace(clients=[c1, c2])
     assert identify_client(server, ["11:22:33:44:55:66"]) is c2
 
 
 def test_identify_client_no_match():
-    server = SimpleNamespace(clients=[SimpleNamespace(identifier="aa:bb")])
+    server = SimpleNamespace(clients=[fake_client("aa:bb")])
     assert identify_client(server, ["cc:dd"]) is None
 
 
 def test_identify_client_empty_macs():
-    server = SimpleNamespace(clients=[SimpleNamespace(identifier="aa:bb")])
+    server = SimpleNamespace(clients=[fake_client("aa:bb")])
     assert identify_client(server, []) is None
+
+
+def test_identify_client_prefers_connected_entry():
+    # Host on wifi + ethernet: the roster keeps a stale entry for the
+    # interface it no longer registers with.
+    stale = fake_client("eth", connected=False)
+    live = fake_client("wlan")
+    server = SimpleNamespace(clients=[stale, live])
+    assert identify_client(server, ["eth", "wlan"]) is live
+
+
+def test_identify_client_none_connected_falls_back_to_first_match():
+    c1 = fake_client("eth", connected=False)
+    c2 = fake_client("wlan", connected=False)
+    server = SimpleNamespace(clients=[c1, c2])
+    assert identify_client(server, ["eth", "wlan"]) is c1
+
+
+# --- MprisBridge client binding ----------------------------------------
+def fake_bridge(clients: list, macs: list[str]) -> MprisBridge:
+    streams = {
+        "mpd": SimpleNamespace(identifier="mpd", metadata=None, status="idle", properties=None),
+        "spotify": SimpleNamespace(identifier="spotify", metadata=None, status="playing", properties=None),
+    }
+    server = SimpleNamespace(clients=clients, streams=list(streams.values()), groups=[], stream=streams.get)
+    for stream in server.streams:
+        stream.set_callback = lambda _cb: None
+    bridge = MprisBridge(loop=None, macs=macs)
+    bridge.conn = Connection(server, "host")
+    bridge.client = identify_client(server, macs)
+    bridge.wire_entity_callbacks()
+    return bridge
+
+
+def test_bridge_follows_entry_that_connects():
+    stale = fake_client("eth", connected=False, stream="mpd")
+    ours = fake_client("wlan", connected=False, stream="spotify")
+    bridge = fake_bridge([stale, ours], ["eth", "wlan"])
+    assert bridge.client is stale
+
+    ours.connected = True
+    (callback,) = ours.callbacks
+    callback(ours)
+    assert bridge.client is ours
+    assert bridge.player.PlaybackStatus == "Playing"
+
+
+def test_bridge_keeps_binding_when_nothing_is_connected():
+    stale = fake_client("eth", connected=False, stream="mpd")
+    ours = fake_client("wlan", stream="spotify")
+    bridge = fake_bridge([stale, ours], ["eth", "wlan"])
+    assert bridge.client is ours
+
+    ours.connected = False
+    ours.callbacks[0](ours)
+    assert bridge.client is ours
+
+
+def test_bridge_ignores_callbacks_of_foreign_clients():
+    other = fake_client("other-host")
+    ours = fake_client("wlan")
+    fake_bridge([other, ours], ["wlan"])
+    assert other.callbacks == []
+    assert len(ours.callbacks) == 1
+
+
+def test_new_client_replaces_disconnected_binding():
+    stale = fake_client("eth", connected=False, stream="mpd")
+    bridge = fake_bridge([stale], ["eth", "wlan"])
+    assert bridge.client is stale
+
+    ours = fake_client("wlan", stream="spotify")
+    bridge.conn.server.clients.append(ours)
+    bridge.on_new_client(ours)
+    assert bridge.client is ours
+    assert len(ours.callbacks) == 1
+
+
+def test_new_client_does_not_replace_connected_binding():
+    ours = fake_client("wlan", stream="spotify")
+    bridge = fake_bridge([ours], ["eth", "wlan"])
+    other = fake_client("eth", stream="mpd")
+    bridge.conn.server.clients.insert(0, other)
+    bridge.on_new_client(other)
+    assert bridge.client is ours
+
+
+def test_server_update_drops_binding_deleted_from_roster():
+    # Server.DeleteClient on the stale entry we were bound to.
+    stale = fake_client("eth", connected=False, stream="mpd")
+    ours = fake_client("wlan", connected=False, stream="spotify")
+    bridge = fake_bridge([stale, ours], ["eth", "wlan"])
+    assert bridge.client is stale
+
+    bridge.conn.server.clients.remove(stale)
+    bridge.on_server_update()
+    assert bridge.client is ours
+
+
+def test_server_update_unbinds_when_no_entry_is_left():
+    ours = fake_client("wlan")
+    bridge = fake_bridge([ours], ["wlan"])
+    bridge.conn.server.clients.clear()
+    bridge.on_server_update()
+    assert bridge.client is None
 
 
 # --- _connect_with_backoff ---------------------------------------------

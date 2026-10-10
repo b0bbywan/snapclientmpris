@@ -121,11 +121,14 @@ def local_mac_addresses() -> list[str]:
 def identify_client(
     server: snapcast.control.Snapserver, macs: list[str]
 ) -> snapcast.control.Snapclient | None:
-    """Locate this host's Snapclient in ``server.clients`` by MAC."""
-    for client in server.clients:
-        if client.identifier in macs:
+    """Locate this host's Snapclient in ``server.clients`` by MAC. The roster
+    keeps one entry per interface the host ever registered with, so several
+    can match: prefer a connected one."""
+    matches = [c for c in server.clients if c.identifier in macs]
+    for client in matches:
+        if client.connected:
             return client
-    return None
+    return matches[0] if matches else None
 
 
 # --- Pure state helpers ------------------------------------------------
@@ -307,16 +310,47 @@ class MprisBridge:
             s.set_callback(lambda _stream: self.refresh())
         for g in self.conn.server.groups:
             g.set_callback(lambda _group: self.refresh())
+        for c in self.conn.server.clients:
+            if c.identifier in self.macs:
+                c.set_callback(self.on_client_update)
+
+    def rebind_client(self) -> bool:
+        """Re-identify our client; return whether the binding changed. A
+        binding still in the roster is kept unless it is disconnected and
+        another entry is connected."""
+        if self.conn is None:
+            return False
+        found = identify_client(self.conn.server, self.macs)
+        if found is self.client:
+            return False
+        current = self.client
+        if (
+            current is not None
+            and any(c is current for c in self.conn.server.clients)
+            and (current.connected or found is None or not found.connected)
+        ):
+            return False
+        self.client = found
+        logger.info("bound to snapclient: %s", found.identifier if found is not None else None)
+        return True
+
+    def on_client_update(self, _client: snapcast.control.Snapclient) -> None:
+        # One of our roster entries (dis)connected.
+        if self.rebind_client():
+            self.refresh()
 
     def on_server_update(self) -> None:
+        # Covers a bound entry deleted server-side (Server.DeleteClient).
+        self.rebind_client()
         self.wire_entity_callbacks()
         self.refresh()
 
     def on_new_client(self, new_client: snapcast.control.Snapclient) -> None:
-        # Catch a snapclient that registered late (separate unit).
-        if self.client is None and new_client.identifier in self.macs:
-            self.client = new_client
-            logger.info("snapclient registered: %s", new_client.identifier)
+        # Catch a snapclient that registered late (separate unit), also when
+        # we were bound to a stale entry of another interface.
+        if new_client.identifier in self.macs:
+            new_client.set_callback(self.on_client_update)
+            self.rebind_client()
         self.refresh()
 
     def on_disconnect(self, exception: Exception | None) -> None:
