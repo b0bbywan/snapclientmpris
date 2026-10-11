@@ -207,6 +207,15 @@ def test_control_stream_forwards_command():
     server.stream_control.assert_awaited_once_with("s1", "play", {})
 
 
+def test_control_stream_nests_the_command_parameters():
+    # snapserver reads them under "params"; python-snapcast merges the dict
+    # it is given into the request.
+    server = _mock_server()
+    stream = SimpleNamespace(identifier="s1", properties={"canControl": True})
+    asyncio.run(control_stream(server, stream, "seek", {"offset": -5.0}))
+    server.stream_control.assert_awaited_once_with("s1", "seek", {"params": {"offset": -5.0}})
+
+
 # --- identify_client ---------------------------------------------------
 def fake_client(identifier: str, connected: bool = True, stream: str = "s1") -> SimpleNamespace:
     callbacks: list = []
@@ -267,6 +276,16 @@ def fake_bridge(clients: list, macs: list[str]) -> MprisBridge:
     bridge.client = identify_client(server, macs)
     bridge.wire_entity_callbacks()
     return bridge
+
+
+def test_bridge_forwards_seek_and_set_position_in_seconds():
+    bridge = fake_bridge([fake_client("eth", stream="mpd")], ["eth"])
+    calls: list = []
+    bridge.control = lambda command, params=None: calls.append((command, params))
+    bridge.player.update_capabilities({"CanSeek": True})
+    bridge.player.Seek(-5_000_000)
+    bridge.player.SetPosition("/org/snapcast/Track/14", 60_500_000)
+    assert calls == [("seek", {"offset": -5.0}), ("setPosition", {"position": 60.5})]
 
 
 def position_updates(bridge: MprisBridge) -> list:
