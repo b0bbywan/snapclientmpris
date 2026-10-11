@@ -41,6 +41,12 @@ to `snapclientmpris` to better reflect what the daemon does.
   `CanGoPrevious` / `CanSeek`) are mirrored from the stream's
   properties, so MPRIS clients only enable the buttons the source
   actually supports.
+* `Position` is the position the stream's source reports, advanced
+  locally while playing, and `Seek` / `SetPosition` are forwarded to
+  the source when it can seek. The source only reports its position
+  now and then (`meta_mpd.py`: on every MPD event and every 15
+  seconds), so right after connecting or changing stream it can be
+  that far off until the next report, which emits `Seeked`.
 * Configuration is resolved from
   `$XDG_CONFIG_HOME/snapclientmpris/snapclientmpris.conf` with
   `/etc/snapclientmpris.conf` as fallback. An example template ships at
