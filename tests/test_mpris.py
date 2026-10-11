@@ -1,5 +1,7 @@
 """Tests for the MediaPlayer2Player state machine."""
 
+from dbus_fast import Variant
+
 from snapclientmpris.mpris import MediaPlayer2Player
 
 
@@ -137,3 +139,90 @@ def test_next_previous_no_callback_noop():
     # Should simply do nothing instead of crashing.
     player.Next()
     player.Previous()
+
+
+# --- Position ----------------------------------------------------------
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 100.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _playing_player(monkeypatch, position_us: int):
+    """A playing player that was just told ``position_us``, with its clock
+    and the positions it sent with Seeked."""
+    clock = FakeClock()
+    player = MediaPlayer2Player(clock=clock)
+    monkeypatch.setattr(player, "emit_properties_changed", lambda _changed: None)
+    seeked: list[int] = []
+    monkeypatch.setattr(player, "Seeked", seeked.append)
+    player.update_position(position_us)
+    player.update_playback_status("Playing")
+    return player, clock, seeked
+
+
+def test_position_is_zero_when_unknown():
+    assert MediaPlayer2Player().Position == 0
+
+
+def test_position_advances_while_playing(monkeypatch):
+    player, clock, _ = _playing_player(monkeypatch, 10_000_000)
+    clock.now += 5
+    assert player.Position == 15_000_000
+
+
+def test_position_stands_still_while_paused(monkeypatch):
+    player, clock, _ = _playing_player(monkeypatch, 10_000_000)
+    clock.now += 5
+    player.update_playback_status("Paused")
+    clock.now += 60
+    assert player.Position == 15_000_000
+
+
+def test_position_resumes_from_where_it_paused(monkeypatch):
+    player, clock, _ = _playing_player(monkeypatch, 10_000_000)
+    clock.now += 5
+    player.update_playback_status("Paused")
+    clock.now += 60
+    player.update_playback_status("Playing")
+    clock.now += 2
+    assert player.Position == 17_000_000
+
+
+def test_position_stops_at_the_track_length(monkeypatch):
+    player, clock, _ = _playing_player(monkeypatch, 10_000_000)
+    player.update_metadata({"mpris:length": Variant("x", 12_000_000)})
+    clock.now += 5
+    assert player.Position == 12_000_000
+
+
+def test_first_known_position_emits_seeked(monkeypatch):
+    _, _, seeked = _playing_player(monkeypatch, 10_000_000)
+    assert seeked == [10_000_000]
+
+
+def test_update_position_on_track_does_not_emit_seeked(monkeypatch):
+    player, clock, seeked = _playing_player(monkeypatch, 10_000_000)
+    seeked.clear()
+    clock.now += 15
+    player.update_position(25_200_000)
+    assert seeked == []
+    assert player.Position == 25_200_000
+
+
+def test_update_position_off_track_emits_seeked(monkeypatch):
+    player, clock, seeked = _playing_player(monkeypatch, 10_000_000)
+    seeked.clear()
+    clock.now += 15
+    player.update_position(90_000_000)
+    assert seeked == [90_000_000]
+
+
+def test_update_position_unknown_resets_without_seeked(monkeypatch):
+    player, _, seeked = _playing_player(monkeypatch, 10_000_000)
+    seeked.clear()
+    player.update_position(None)
+    assert seeked == []
+    assert player.Position == 0

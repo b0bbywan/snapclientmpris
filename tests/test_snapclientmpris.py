@@ -15,6 +15,7 @@ from snapclientmpris.snapclientmpris import (
     playback_status,
     stream_capabilities,
     stream_metadata,
+    stream_position,
 )
 
 
@@ -152,6 +153,26 @@ def test_stream_capabilities_partial_defaults_to_false():
     }
 
 
+# --- stream_position ---------------------------------------------------
+def test_stream_position_no_stream():
+    assert stream_position(None) is None
+
+
+def test_stream_position_not_reported():
+    assert stream_position(SimpleNamespace(properties=None)) is None
+    assert stream_position(SimpleNamespace(properties={"canSeek": True})) is None
+
+
+def test_stream_position_seconds_to_microseconds():
+    assert stream_position(SimpleNamespace(properties={"position": 13.5})) == 13_500_000
+    assert stream_position(SimpleNamespace(properties={"position": 0})) == 0
+
+
+def test_stream_position_ignores_non_numbers():
+    assert stream_position(SimpleNamespace(properties={"position": "13.5"})) is None
+    assert stream_position(SimpleNamespace(properties={"position": True})) is None
+
+
 # --- control_stream ----------------------------------------------------
 def _mock_server():
     server = MagicMock()
@@ -246,6 +267,60 @@ def fake_bridge(clients: list, macs: list[str]) -> MprisBridge:
     bridge.client = identify_client(server, macs)
     bridge.wire_entity_callbacks()
     return bridge
+
+
+def position_updates(bridge: MprisBridge) -> list:
+    """Record what the bridge hands to the player's update_position."""
+    updates: list = []
+    bridge.player.update_position = updates.append
+    return updates
+
+
+def test_bridge_passes_a_position_sample_once():
+    bridge = fake_bridge([fake_client("eth", stream="mpd")], ["eth"])
+    updates = position_updates(bridge)
+    stream = bridge.conn.server.stream("mpd")
+    stream.properties = {"position": 13.5}
+    bridge.refresh()
+    # snapserver repeats the last sample on unrelated updates
+    stream.properties = {"position": 13.5, "volume": 80}
+    bridge.refresh()
+    assert updates == [13_500_000]
+
+
+def test_bridge_passes_each_new_position_sample():
+    bridge = fake_bridge([fake_client("eth", stream="mpd")], ["eth"])
+    updates = position_updates(bridge)
+    stream = bridge.conn.server.stream("mpd")
+    stream.properties = {"position": 13.5}
+    bridge.refresh()
+    stream.properties = {"position": 28.5}
+    bridge.refresh()
+    stream.properties = {}
+    bridge.refresh()
+    assert updates == [13_500_000, 28_500_000, None]
+
+
+def test_bridge_takes_the_position_of_the_stream_it_moves_to():
+    client = fake_client("eth", stream="mpd")
+    bridge = fake_bridge([client], ["eth"])
+    updates = position_updates(bridge)
+    bridge.conn.server.stream("mpd").properties = {"position": 13.5}
+    bridge.conn.server.stream("spotify").properties = {"position": 13.5}
+    bridge.refresh()
+    client.group.stream = "spotify"
+    bridge.refresh()
+    assert updates == [13_500_000, 13_500_000]
+
+
+def test_bridge_forgets_the_position_on_disconnect():
+    bridge = fake_bridge([fake_client("eth", stream="mpd")], ["eth"])
+    bridge.schedule = lambda coro: coro.close()
+    updates = position_updates(bridge)
+    bridge.conn.server.stream("mpd").properties = {"position": 13.5}
+    bridge.refresh()
+    bridge.on_disconnect(None)
+    assert updates == [13_500_000, None]
 
 
 def test_bridge_follows_entry_that_connects():
