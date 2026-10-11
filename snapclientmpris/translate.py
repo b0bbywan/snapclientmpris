@@ -8,7 +8,19 @@ D-Bus or asyncio dependencies beyond ``dbus_fast.Variant``.
 
 from __future__ import annotations
 
+import re
+
 from dbus_fast import Variant
+
+# Not under /org/mpris: the MPRIS spec keeps that prefix for its own values.
+TRACK_PATH = "/org/snapcast/Track"
+
+
+def track_object_path(track_id: object) -> str | None:
+    """D-Bus object path for a snapserver ``trackId`` (path elements only
+    take ``[A-Za-z0-9_]``), or ``None`` for an empty one."""
+    element = re.sub(r"[^A-Za-z0-9_]", "_", str(track_id))
+    return f"{TRACK_PATH}/{element}" if element else None
 
 
 def translate_snapserver_metadata(snap_md: dict, snapcast_url: str | None = None) -> dict:
@@ -30,6 +42,10 @@ def translate_snapserver_metadata(snap_md: dict, snapcast_url: str | None = None
     if not snap_md:
         return out
 
+    if "trackId" in snap_md:
+        track_path = track_object_path(snap_md["trackId"])
+        if track_path:
+            setv("mpris:trackid", "o", track_path)
     if "title" in snap_md:
         setv("xesam:title", "s", str(snap_md["title"]))
     if "artist" in snap_md:

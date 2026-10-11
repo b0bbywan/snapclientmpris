@@ -64,6 +64,21 @@ def test_translate_track_and_disc_number_to_int():
     assert md["xesam:discNumber"].value == 1
 
 
+def test_translate_track_id_to_object_path():
+    out = translate_snapserver_metadata({"trackId": "14"})
+    assert out["mpris:trackid"].signature == "o"
+    assert out["mpris:trackid"].value == "/org/snapcast/Track/14"
+
+
+def test_translate_track_id_keeps_only_path_characters():
+    out = translate_snapserver_metadata({"trackId": "spotify:track:46t9v01eDmco7IPVq8CMji"})
+    assert out["mpris:trackid"].value == "/org/snapcast/Track/spotify_track_46t9v01eDmco7IPVq8CMji"
+
+
+def test_translate_empty_track_id_is_left_out():
+    assert "mpris:trackid" not in translate_snapserver_metadata({"trackId": ""})
+
+
 def test_translate_art_url():
     md = translate_snapserver_metadata({"artUrl": "https://example/cover.png"})
     assert md["mpris:artUrl"].value == "https://example/cover.png"

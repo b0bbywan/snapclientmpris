@@ -210,6 +210,7 @@ async def control_stream(
     server: snapcast.control.Snapserver,
     stream: snapcast.control.Snapstream | None,
     command: str,
+    params: dict | None = None,
 ) -> None:
     """Forward an MPRIS command to the stream's source via Stream.Control.
     No-op with no stream or ``canControl=false``."""
@@ -220,7 +221,9 @@ async def control_stream(
         logger.debug("control_stream: %s ignored (canControl=False)", command)
         return
     logger.debug("control_stream: %s -> %s", command, stream.identifier)
-    await server.stream_control(stream.identifier, command, {})
+    # python-snapcast merges this dict into the request: the command's own
+    # parameters go under "params", where snapserver reads them.
+    await server.stream_control(stream.identifier, command, {"params": params} if params else {})
 
 
 # --- Daemon ------------------------------------------------------------
@@ -264,6 +267,9 @@ class MprisBridge:
             on_next=lambda: self.control("next"),
             on_previous=lambda: self.control("previous"),
             on_volume_set=self.on_volume_set,
+            # MPRIS counts in microseconds, Stream.Control in seconds.
+            on_seek=lambda offset: self.control("seek", {"offset": offset / 1_000_000}),
+            on_set_position=lambda position: self.control("setPosition", {"position": position / 1_000_000}),
         )
 
     def schedule(self, coro: Coroutine) -> asyncio.Task:
@@ -310,7 +316,7 @@ class MprisBridge:
         await self.client.set_volume(percent)
         self.refresh()
 
-    def control(self, command: str) -> None:
+    def control(self, command: str, params: dict | None = None) -> None:
         # Affects every listener on the stream (intended multi-room semantic).
         if self.conn is None:
             return
@@ -318,6 +324,7 @@ class MprisBridge:
             self.conn.server,
             client_stream(self.conn.server, self.client),
             command,
+            params,
         ))
 
     def on_volume_set(self, v: float) -> None:

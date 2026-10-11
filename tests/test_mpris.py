@@ -226,3 +226,67 @@ def test_update_position_unknown_resets_without_seeked(monkeypatch):
     player.update_position(None)
     assert seeked == []
     assert player.Position == 0
+
+
+# --- Seek / SetPosition ------------------------------------------------
+TRACK = "/org/snapcast/Track/14"
+
+
+def _seekable_player(monkeypatch, can_seek: bool = True):
+    """A player on a 200 s track, with what it forwards to its callbacks."""
+    calls: list = []
+    player = MediaPlayer2Player(
+        on_seek=lambda offset: calls.append(("seek", offset)),
+        on_set_position=lambda position: calls.append(("setPosition", position)),
+    )
+    monkeypatch.setattr(player, "emit_properties_changed", lambda _changed: None)
+    player.update_capabilities({"CanSeek": can_seek})
+    player.update_metadata({
+        "mpris:trackid": Variant("o", TRACK),
+        "mpris:length": Variant("x", 200_000_000),
+    })
+    return player, calls
+
+
+def test_seek_forwards_the_offset(monkeypatch):
+    player, calls = _seekable_player(monkeypatch)
+    player.Seek(-5_000_000)
+    assert calls == [("seek", -5_000_000)]
+
+
+def test_seek_ignored_when_the_source_cannot_seek(monkeypatch):
+    player, calls = _seekable_player(monkeypatch, can_seek=False)
+    player.Seek(5_000_000)
+    assert calls == []
+
+
+def test_set_position_forwards_the_position(monkeypatch):
+    player, calls = _seekable_player(monkeypatch)
+    player.SetPosition(TRACK, 60_000_000)
+    assert calls == [("setPosition", 60_000_000)]
+
+
+def test_set_position_ignored_when_the_source_cannot_seek(monkeypatch):
+    player, calls = _seekable_player(monkeypatch, can_seek=False)
+    player.SetPosition(TRACK, 60_000_000)
+    assert calls == []
+
+
+def test_set_position_ignores_a_track_that_is_not_the_current_one(monkeypatch):
+    player, calls = _seekable_player(monkeypatch)
+    player.SetPosition("/org/snapcast/Track/13", 60_000_000)
+    assert calls == []
+
+
+def test_set_position_ignores_a_position_outside_the_track(monkeypatch):
+    player, calls = _seekable_player(monkeypatch)
+    player.SetPosition(TRACK, -1)
+    player.SetPosition(TRACK, 200_000_001)
+    assert calls == []
+
+
+def test_set_position_accepts_any_track_when_none_is_published(monkeypatch):
+    player, calls = _seekable_player(monkeypatch)
+    player.update_metadata({})
+    player.SetPosition("/whatever", 60_000_000)
+    assert calls == [("setPosition", 60_000_000)]

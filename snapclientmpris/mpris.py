@@ -102,6 +102,8 @@ class MediaPlayer2Player(ServiceInterface):
         on_next: Callable[[], None] | None = None,
         on_previous: Callable[[], None] | None = None,
         on_volume_set: Callable[[float], None] | None = None,
+        on_seek: Callable[[int], None] | None = None,
+        on_set_position: Callable[[int], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         super().__init__(PLAYER_IFACE)
@@ -127,6 +129,8 @@ class MediaPlayer2Player(ServiceInterface):
         self._on_next = on_next
         self._on_previous = on_previous
         self._on_volume_set = on_volume_set
+        self._on_seek = on_seek
+        self._on_set_position = on_set_position
 
     # --- MPRIS methods ------------------------------------------------
     @method()
@@ -166,12 +170,25 @@ class MediaPlayer2Player(ServiceInterface):
             self._on_previous()
 
     @method()
-    def Seek(self, Offset: "x"):  # noqa: N803, ARG002
-        raise DBusError(NOT_SUPPORTED, "Seek is not supported")
+    def Seek(self, Offset: "x"):  # noqa: N803
+        logger.debug("MPRIS Seek %d", Offset)
+        if self._can_seek and self._on_seek:
+            self._on_seek(Offset)
 
     @method()
-    def SetPosition(self, TrackId: "o", Position: "x"):  # noqa: N803, ARG002
-        raise DBusError(NOT_SUPPORTED, "SetPosition is not supported")
+    def SetPosition(self, TrackId: "o", Position: "x"):  # noqa: N803
+        logger.debug("MPRIS SetPosition %s %d", TrackId, Position)
+        if not self._can_seek or not self._on_set_position:
+            return
+        # MPRIS spec: a track that is no longer the current one, or a
+        # position outside of it, is ignored.
+        current = self._metadata.get("mpris:trackid")
+        if isinstance(current, Variant) and current.value != TrackId:
+            return
+        length = self._length()
+        if Position < 0 or (length is not None and Position > length):
+            return
+        self._on_set_position(Position)
 
     @method()
     def OpenUri(self, Uri: "s"):  # noqa: N803, ARG002
