@@ -15,10 +15,12 @@ time handle Play/Pause/Stop/PlayPause, and ``update_playback_status`` /
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 
+from dbus_fast import Variant
 from dbus_fast.errors import DBusError
-from dbus_fast.service import PropertyAccess, ServiceInterface, dbus_property, method
+from dbus_fast.service import PropertyAccess, ServiceInterface, dbus_property, method, signal
 
 NOT_SUPPORTED = "org.freedesktop.DBus.Error.NotSupported"
 
@@ -30,6 +32,9 @@ BUS_NAME = f"{MEDIA_PLAYER_IFACE}.snapcast"
 PLAYER_IFACE = f"{MEDIA_PLAYER_IFACE}.Player"
 
 IDENTITY = "Snapcast client"
+
+# A sampled position further than this from where playback should be is a jump.
+SEEK_TOLERANCE_US = 1_000_000
 DESKTOP_ENTRY = "snapclientmpris"
 
 
@@ -97,11 +102,17 @@ class MediaPlayer2Player(ServiceInterface):
         on_next: Callable[[], None] | None = None,
         on_previous: Callable[[], None] | None = None,
         on_volume_set: Callable[[float], None] | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         super().__init__(PLAYER_IFACE)
         self._playback_status = "Stopped"
         self._metadata: dict = {}
         self._volume = 1.0
+        # Last position the source reported (microseconds, None: unknown)
+        # and when; Position advances it while playing.
+        self._position: int | None = None
+        self._position_at = 0.0
+        self._clock = clock
         # Capabilities default to False — they're filled in from the
         # snapserver stream's properties on the first refresh().
         self._can_play = False
@@ -166,6 +177,11 @@ class MediaPlayer2Player(ServiceInterface):
     def OpenUri(self, Uri: "s"):  # noqa: N803, ARG002
         raise DBusError(NOT_SUPPORTED, "OpenUri is not supported")
 
+    # --- MPRIS signals -----------------------------------------------
+    @signal()
+    def Seeked(self, Position: "x") -> "x":  # noqa: N803
+        return Position
+
     # --- MPRIS properties --------------------------------------------
     @dbus_property(access=PropertyAccess.READ)
     def PlaybackStatus(self) -> "s":
@@ -177,7 +193,7 @@ class MediaPlayer2Player(ServiceInterface):
 
     @dbus_property(access=PropertyAccess.READ)
     def Position(self) -> "x":
-        return 0
+        return self._position_now()
 
     @dbus_property(access=PropertyAccess.READ)
     def Rate(self) -> "d":
@@ -247,6 +263,23 @@ class MediaPlayer2Player(ServiceInterface):
         if self._on_volume_set:
             self._on_volume_set(clamped)
 
+    # --- Position ----------------------------------------------------
+    def _length(self) -> int | None:
+        length = self._metadata.get("mpris:length")
+        return length.value if isinstance(length, Variant) else None
+
+    def _position_now(self) -> int:
+        """The last reported position, advanced by the time spent playing."""
+        if self._position is None:
+            return 0
+        position = self._position
+        if self._playback_status == "Playing":
+            position += int((self._clock() - self._position_at) * 1_000_000)
+        length = self._length()
+        if length is not None:
+            position = min(position, length)
+        return max(position, 0)
+
     # --- External update API -----------------------------------------
     def update_playback_status(self, status: str) -> None:
         """Set PlaybackStatus and notify subscribers."""
@@ -255,6 +288,11 @@ class MediaPlayer2Player(ServiceInterface):
             return
         if status == self._playback_status:
             return
+        # Settle the position under the old status: the clock only runs
+        # while playing.
+        if self._position is not None:
+            self._position = self._position_now()
+            self._position_at = self._clock()
         self._playback_status = status
         self.emit_properties_changed({"PlaybackStatus": status})
 
@@ -262,6 +300,17 @@ class MediaPlayer2Player(ServiceInterface):
         """Replace Metadata and notify subscribers."""
         self._metadata = metadata
         self.emit_properties_changed({"Metadata": metadata})
+
+    def update_position(self, position: int | None) -> None:
+        """Take a position the source just reported, in microseconds
+        (``None``: unknown). Emits Seeked when playback was not expected
+        there. Position itself never emits PropertiesChanged (MPRIS spec)."""
+        expected = self._position_now()
+        self._position = position
+        self._position_at = self._clock()
+        if position is not None and abs(position - expected) > SEEK_TOLERANCE_US:
+            logger.debug("update_position: expected %d, got %d, emitting Seeked", expected, position)
+            self.Seeked(position)
 
     def update_capabilities(self, caps: dict) -> None:
         """Update the Can* flags from external state (snapserver stream

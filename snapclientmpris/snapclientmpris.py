@@ -195,6 +195,17 @@ def stream_capabilities(stream: snapcast.control.Snapstream | None) -> dict:
     return caps
 
 
+def stream_position(stream: snapcast.control.Snapstream | None) -> int | None:
+    """The position the source last reported (seconds), as MPRIS
+    microseconds. ``None`` when it reports none."""
+    if stream is None:
+        return None
+    position = (stream.properties or {}).get("position")
+    if isinstance(position, bool) or not isinstance(position, int | float):
+        return None
+    return int(position * 1_000_000)
+
+
 async def control_stream(
     server: snapcast.control.Snapserver,
     stream: snapcast.control.Snapstream | None,
@@ -239,6 +250,9 @@ class MprisBridge:
         self.conn: Connection | None = None
         self.client: snapcast.control.Snapclient | None = None
         self.reconnect_task: asyncio.Task | None = None
+        # (stream id, position) last handed to the player: snapserver repeats
+        # the last sample on unrelated updates, only a new one is fresh.
+        self.position_seen: tuple[str, int] | None = None
         # Strong-reference fire-and-forget tasks so the event loop's weak
         # refs don't let them be GC'd mid-execution (asyncio docs warn).
         self.bg_tasks: set[asyncio.Task] = set()
@@ -271,12 +285,23 @@ class MprisBridge:
             md = stream_metadata(self.conn.host, s)
             if md is not None:
                 self.player.update_metadata(md)
+            # Before the status: a new sample is checked against where the
+            # old one would be by now.
+            self.sync_position(s)
             self.player.update_playback_status(playback_status(s))
             self.player.update_capabilities(stream_capabilities(s))
             if self.client.volume is not None:
                 self.player.update_volume(self.client.volume / 100.0)
         except Exception:
             logger.exception("refresh failed")
+
+    def sync_position(self, stream: snapcast.control.Snapstream | None) -> None:
+        position = stream_position(stream)
+        seen = (stream.identifier, position) if stream is not None and position is not None else None
+        if seen == self.position_seen:
+            return
+        self.position_seen = seen
+        self.player.update_position(position)
 
     # --- MPRIS -> snapserver (commands) --------------------------------
     async def set_volume(self, percent: int) -> None:
@@ -360,6 +385,7 @@ class MprisBridge:
             return
         logger.info("snapserver disconnected (%s); clearing MPRIS state", exception)
         self.client = None
+        self.sync_position(None)
         self.player.update_playback_status("Stopped")
         self.player.update_metadata({})
         self.player.update_capabilities({
