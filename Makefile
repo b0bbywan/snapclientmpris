@@ -6,8 +6,8 @@
 PYTHON  ?= python3
 VERSION := $(PYTHON) scripts/version.py
 
-.PHONY: version deb-version check-tag sync-deb \
-        lint lint-ruff lint-mypy test build sdist deb clean
+.PHONY: version deb-version check-tag sync-deb check-arch sync-arch \
+        lint lint-ruff lint-mypy test build sdist deb arch clean
 
 # --- version helpers ---------------------------------------------------
 
@@ -32,6 +32,22 @@ sync-deb:
 	if [ "$$deb" != "$$cl" ]; then \
 		dch -b --newversion "$$deb" --distribution unstable \
 			--urgency medium "Release $$deb"; \
+	fi
+
+# Arch PKGBUILD pkgver must match __init__.py. sync-arch also resets pkgrel.
+ARCH_DIR    := packaging/arch
+ARCH_PKGVER  = sed -n 's/^pkgver=//p' $(ARCH_DIR)/PKGBUILD
+
+check-arch:
+	@v=$$($(VERSION)); a=$$($(ARCH_PKGVER)); \
+	if [ "$$v" != "$$a" ]; then \
+		echo "PKGBUILD pkgver $$a != __init__.py $$v (run make sync-arch)" >&2; exit 1; \
+	fi
+
+sync-arch:
+	@v=$$($(VERSION)); a=$$($(ARCH_PKGVER)); \
+	if [ "$$v" != "$$a" ]; then \
+		sed -i "s/^pkgver=.*/pkgver=$$v/; s/^pkgrel=.*/pkgrel=1/" $(ARCH_DIR)/PKGBUILD; \
 	fi
 
 # --- dev workflow ------------------------------------------------------
@@ -62,5 +78,13 @@ sdist:
 deb:
 	dpkg-buildpackage -b -us -uc
 
+# Builds the Arch package from a local sdist of the working tree, not
+# PyPI's. Needs makepkg, so run it as non-root in an Arch container.
+# CI passes MAKEPKG_FLAGS=--nodeps since snapcast is AUR-only.
+arch:
+	$(PYTHON) -m build --sdist --no-isolation --outdir $(ARCH_DIR)
+	cd $(ARCH_DIR) && makepkg -f $(MAKEPKG_FLAGS)
+
 clean:
 	rm -rf build/ dist/ *.egg-info snapclientmpris.egg-info
+	rm -rf $(ARCH_DIR)/src $(ARCH_DIR)/pkg $(ARCH_DIR)/*.tar.gz $(ARCH_DIR)/*.pkg.tar.*
