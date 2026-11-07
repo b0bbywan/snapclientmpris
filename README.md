@@ -97,6 +97,26 @@ the system bus; the package ships the matching D-Bus policy at
 `/usr/share/dbus-1/system.d/org.mpris.MediaPlayer2.snapcast.conf`
 (grants `_snapclient` ownership, allows any local user to talk to it).
 
+The `.deb` is built and tested on Debian trixie and testing and on
+Ubuntu 26.04. Ubuntu 24.04 has no `python3-snapcast`, so the package
+does not install there; use PyPI instead.
+
+### Arch Linux
+
+`packaging/arch/PKGBUILD` builds the package from the PyPI sdist, so
+final releases only. Its `snapcast` and `python-snapcast` dependencies come from the
+AUR, so install them first (or let an AUR helper do it):
+
+```sh
+cd packaging/arch
+updpkgsums       # the in-repo PKGBUILD ships sha256sums=SKIP
+makepkg -si
+```
+
+The units and D-Bus policy are the same as the `.deb`'s, except that
+system mode runs as `snapclient`, the user created by the AUR
+`snapcast` package.
+
 ### From PyPI
 
 Final releases are published to [PyPI](https://pypi.org/p/snapclientmpris),
@@ -248,42 +268,54 @@ make lint        # ruff + mypy
 make test        # pytest
 make build       # python -m build (sdist + wheel)
 make deb         # dpkg-buildpackage -b -us -uc (Debian toolchain)
-make clean       # drop build/, dist/, *.egg-info
+make arch        # makepkg on a local sdist (Arch, non-root)
+make clean       # drop build/, dist/, *.egg-info, makepkg output
 make version     # print the Python version (from __init__.py)
 make sync-deb    # bump debian/changelog to match __init__.py
+make sync-arch   # bump the PKGBUILD pkgver to match __init__.py
 ```
 
 `snapclientmpris/__init__.py` is the single source of truth for the
-version; `make sync-deb` and `make check-tag TAG=…` keep
-`debian/changelog` and the git tag aligned with it.
+version; `make sync-deb`, `make sync-arch` and `make check-tag TAG=…`
+keep `debian/changelog`, the PKGBUILD and the git tag aligned with it.
+A version bump runs `make sync-arch` too: CI fails (`make check-arch`)
+when the PKGBUILD `pkgver` lags behind.
 
 ## Build a .deb
 
-Build-deps (per `debian/control`): `debhelper-compat (= 13)`,
-`dh-python`, `python3`, `python3-setuptools`. Then `make deb` on
-Debian trixie or a derivative produces the `.deb` (wraps
-`dpkg-buildpackage -b -us -uc`). The runtime deps
-(`python3-snapcast`, `python3-dbus-fast`, `python3-zeroconf`,
-`snapclient`) are resolved by APT at install time, not at build time.
+Install the build-deps with `sudo apt-get build-dep ./`, then `make deb`
+on Debian trixie or a derivative produces the `.deb` (wraps
+`dpkg-buildpackage -b -us -uc`). The build runs pytest against the
+distro's `python3-snapcast`, `python3-dbus-fast` and `python3-zeroconf`;
+build with `DEB_BUILD_PROFILES=nocheck DEB_BUILD_OPTIONS=nocheck` to skip
+the tests and those build-deps.
 
 ## Continuous integration
 
 `.github/workflows/build.yml` runs:
 
-* **lint** on every PR to `master` — `ruff`, `mypy` and `pytest`.
-* **build** on every PR and on `v*` tags — `make build` (sdist +
+* **lint** on every PR to `master`: `ruff`, `mypy`, `pytest` and
+  `make check-arch`.
+* **build** on every PR and on `v*` tags: `make build` (sdist +
   wheel), uploaded as an artifact for the release and publish jobs.
-* **deb** on every PR and on `v*` tags — `dpkg-buildpackage` inside a
-  `debian:trixie` container; on tags, syncs `debian/changelog` with
-  the tag (rewriting `-rc/-beta/-alpha` to Debian-sortable `~rc/...`
-  suffixes) before building.
-* **release** on `v*` tags — attaches the `.deb`, sdist and wheel to
-  the GitHub release, flagging `-rc/-beta/-alpha` tags as prereleases.
-* **publish-to-testpypi** on `v*` tags — uploads sdist + wheel to
+* **deb** on every PR and on `v*` tags: `dpkg-buildpackage` (pytest
+  included) in `debian:trixie`, `debian:testing` and `ubuntu:26.04`
+  containers, then installs the `.deb` and smoke-tests it. `ubuntu:24.04`
+  builds without tests and runs pytest with `snapcast` from pip. On tags,
+  syncs `debian/changelog` with the tag (rewriting `-rc/-beta/-alpha` to
+  Debian-sortable `~rc/...` suffixes) before building. Only the trixie
+  `.deb` is released.
+* **arch** on every PR and on `v*` tags: `make arch` (pytest in
+  `check()`) in an `archlinux` container, `python-snapcast` built from
+  the AUR, then installs the package and smoke-tests it.
+* **release** on `v*` tags: once every deb and arch build passes,
+  attaches the `.deb`, sdist and wheel to the GitHub release, flagging
+  `-rc/-beta/-alpha` tags as prereleases.
+* **publish-to-testpypi** on `v*` tags: uploads sdist + wheel to
   TestPyPI via trusted publishing (all tags, prereleases included).
-* **publish-to-pypi** on final `v*` tags only — uploads to PyPI via
+* **publish-to-pypi** on final `v*` tags only: uploads to PyPI via
   trusted publishing; `-rc/-beta/-alpha` tags stop at TestPyPI.
-* **notify-apt-repo** on `v*` tags — dispatches to
+* **notify-apt-repo** on `v*` tags: dispatches to
   [`b0bbywan/odio-apt-repo`](https://github.com/b0bbywan/odio-apt-repo)
   so the new `.deb` is picked up by `apt.odio.love`.
 
