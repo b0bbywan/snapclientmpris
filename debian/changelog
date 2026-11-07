@@ -1,3 +1,15 @@
+snapclientmpris (1.3.1) unstable; urgency=medium
+
+  * Ship the systemd units, D-Bus files and sample configuration in the
+    sdist, so distribution packages can be built from it. The wheel is
+    unchanged.
+  * Run the test suite at build time against the distribution's
+    python3-dbus-fast, python3-snapcast and python3-zeroconf. The test
+    build dependencies are skipped with the nocheck build profile.
+  * Add an Arch Linux PKGBUILD (packaging/arch/), built from the sdist.
+
+ -- Mathieu Réquillart <mathieu.requillart@gmail.com>  Sat, 07 Nov 2026 19:06:21 +0100
+
 snapclientmpris (1.3.0) unstable; urgency=medium
 
   * Publish the real playback position: Position is what the stream's
