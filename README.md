@@ -104,8 +104,8 @@ does not install there; use PyPI instead.
 ### Arch Linux
 
 `packaging/arch/PKGBUILD` builds the package from the PyPI sdist, so
-final releases only. Its `snapcast` and `python-snapcast` dependencies come from the
-AUR, so install them first (or let an AUR helper do it):
+final releases only. Its `snapcast` and `python-snapcast` dependencies
+come from the AUR, so install them first (or let an AUR helper do it):
 
 ```sh
 cd packaging/arch
@@ -116,6 +116,12 @@ makepkg -si
 The units and D-Bus policy are the same as the `.deb`'s, except that
 system mode runs as `snapclient`, the user created by the AUR
 `snapcast` package.
+
+The package is not on the AUR and the author does not maintain one
+there. Feel free to submit it: put yourself as `# Maintainer:`, fill in
+the checksum with `updpkgsums` and generate `.SRCINFO`. CI builds and
+installs this PKGBUILD on Arch for every release, and `make sync-arch`
+keeps its `pkgver` current.
 
 ### From PyPI
 

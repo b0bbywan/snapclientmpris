@@ -1,4 +1,4 @@
-# Maintainer: Mathieu Réquillart <mathieu.requillart@gmail.com>
+# Contributor: Mathieu Réquillart <mathieu.requillart@gmail.com>
 # pkgver is kept in sync with snapclientmpris/__init__.py by `make sync-arch`.
 
 pkgname=snapclientmpris
