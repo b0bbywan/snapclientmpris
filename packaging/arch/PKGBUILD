@@ -1,0 +1,45 @@
+# Maintainer: Mathieu Réquillart <mathieu.requillart@gmail.com>
+# pkgver is kept in sync with snapclientmpris/__init__.py by `make sync-arch`.
+
+pkgname=snapclientmpris
+pkgver=1.3.0
+pkgrel=1
+pkgdesc="MPRIS2 bridge for the local Snapcast client"
+arch=('any')
+url="https://github.com/b0bbywan/snapclientmpris"
+license=('MIT')
+# snapcast and python-snapcast come from the AUR.
+depends=('python' 'python-snapcast' 'python-dbus-fast' 'python-zeroconf' 'snapcast')
+makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel')
+checkdepends=('python-pytest')
+source=("https://files.pythonhosted.org/packages/source/${pkgname::1}/$pkgname/$pkgname-$pkgver.tar.gz")
+# The sdist reaches PyPI after the tag: run updpkgsums when publishing.
+sha256sums=('SKIP')
+
+build() {
+  cd "$pkgname-$pkgver"
+  python -m build --wheel --no-isolation
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  python -m pytest -q
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  python -m installer --destdir="$pkgdir" dist/*.whl
+
+  install -Dm644 data/user/snapclientmpris.service -t "$pkgdir/usr/lib/systemd/user/"
+  install -Dm644 data/system/snapclientmpris.service -t "$pkgdir/usr/lib/systemd/system/"
+  install -Dm644 data/system/org.mpris.MediaPlayer2.snapcast.conf -t "$pkgdir/usr/share/dbus-1/system.d/"
+  install -Dm644 data/dbus-1/services/org.mpris.MediaPlayer2.snapcast.service -t "$pkgdir/usr/share/dbus-1/services/"
+  install -Dm644 data/snapclientmpris.conf -t "$pkgdir/usr/share/$pkgname/"
+  install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname/"
+
+  # The AUR snapcast package runs snapclient as "snapclient", not Debian's "_snapclient".
+  sed -i 's/^\(User\|Group\)=_snapclient$/\1=snapclient/' \
+    "$pkgdir/usr/lib/systemd/system/snapclientmpris.service"
+  sed -i 's/user="_snapclient"/user="snapclient"/' \
+    "$pkgdir/usr/share/dbus-1/system.d/org.mpris.MediaPlayer2.snapcast.conf"
+}
