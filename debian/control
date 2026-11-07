@@ -8,6 +8,10 @@ Build-Depends:
  pybuild-plugin-pyproject,
  python3,
  python3-setuptools,
+ python3-dbus-fast <!nocheck>,
+ python3-pytest <!nocheck>,
+ python3-snapcast <!nocheck>,
+ python3-zeroconf <!nocheck>,
 Rules-Requires-Root: no
 Standards-Version: 4.7.0
 Homepage: https://github.com/b0bbywan/snapclientmpris
