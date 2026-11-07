@@ -2,7 +2,7 @@
 # pkgver is kept in sync with snapclientmpris/__init__.py by `make sync-arch`.
 
 pkgname=snapclientmpris
-pkgver=1.3.0
+pkgver=1.3.1
 pkgrel=1
 pkgdesc="MPRIS2 bridge for the local Snapcast client"
 arch=('any')
