@@ -24,6 +24,8 @@ jobs:
       - name: Check tag matches __init__.py
         if: startsWith(github.ref, 'refs/tags/v')
         run: make check-tag
+      - name: Check PKGBUILD matches __init__.py
+        run: make check-arch
       - name: ruff
         if: always()
         run: make lint-ruff
@@ -53,23 +55,44 @@ jobs:
           if-no-files-found: error
 
   deb:
+    name: deb (${{ matrix.image }})
     runs-on: ubuntu-latest
-    # Build inside the same Debian release we target (trixie) so dh-python,
-    # debhelper and python3-* versions match what users actually have.
+    # Build, test and install inside each release so dh-python, debhelper
+    # and python3-* versions match what users actually have. dh_auto_test
+    # runs pytest against the distro's python3-* libraries.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Only the trixie .deb is released (Architecture: all, same
+          # content everywhere); the other legs are checks.
+          - image: debian:trixie
+            release: true
+          - image: debian:testing
+          - image: ubuntu:26.04
+          # No python3-snapcast in noble: build without tests, run pytest
+          # with snapcast from pip, skip the install check.
+          - image: ubuntu:24.04
+            no-snapcast: true
     container:
-      image: debian:trixie
+      image: ${{ matrix.image }}
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      DEB_BUILD_PROFILES: ${{ matrix.no-snapcast && 'nocheck' || '' }}
+      DEB_BUILD_OPTIONS: ${{ matrix.no-snapcast && 'nocheck' || '' }}
     steps:
-      - name: Install build deps
+      - name: Install tooling
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            ca-certificates git make \
-            build-essential debhelper dh-python pybuild-plugin-pyproject \
-            python3 python3-setuptools devscripts
+            ca-certificates git make build-essential devscripts
 
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Install build deps
+        run: apt-get build-dep -y ${DEB_BUILD_PROFILES:+-P $DEB_BUILD_PROFILES} ./
 
       - name: Sync changelog from __init__.py
         if: startsWith(github.ref, 'refs/tags/v')
@@ -81,20 +104,72 @@ jobs:
       - name: Build .deb
         run: make deb
 
+      - name: Pytest (distro libs + snapcast from pip)
+        if: matrix.no-snapcast
+        run: |
+          apt-get install -y --no-install-recommends \
+            python3-venv python3-pytest python3-dbus-fast python3-zeroconf
+          python3 -m venv --system-site-packages /opt/venv
+          /opt/venv/bin/pip install 'snapcast>=2.3'
+          /opt/venv/bin/python -m pytest -q
+
       - name: Collect .deb
         run: |
           mkdir -p dist
           mv ../snapclientmpris_*.deb dist/
           ls -lh dist/
 
+      - name: Install .deb and smoke test
+        if: '!matrix.no-snapcast'
+        run: |
+          apt-get install -y ./dist/snapclientmpris_*.deb
+          snapclientmpris --help
+          python3 -c 'import snapclientmpris.snapclientmpris, snapclientmpris.mpris'
+
       - uses: actions/upload-artifact@v7
+        if: matrix.release
         with:
           name: snapclientmpris-deb
           path: dist/*.deb
           if-no-files-found: error
 
+  arch:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Install tooling and repo deps
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git sudo \
+            python-build python-installer python-setuptools python-wheel \
+            python-pytest python-dbus-fast python-zeroconf
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+
+      - uses: actions/checkout@v7
+
+      # python-snapcast is AUR-only; snapcast (AUR, heavy C++ build) is
+      # skipped with --nodeps and --assume-installed.
+      - name: Build python-snapcast from the AUR
+        run: |
+          sudo -u builder git clone --depth 1 https://aur.archlinux.org/python-snapcast.git /home/builder/python-snapcast
+          cd /home/builder/python-snapcast
+          sudo -u builder makepkg -si --noconfirm
+
+      - name: Build package (runs check())
+        run: |
+          chown -R builder .
+          sudo -u builder make arch MAKEPKG_FLAGS=--nodeps
+
+      - name: Install package and smoke test
+        run: |
+          pacman -U --noconfirm --assume-installed snapcast packaging/arch/snapclientmpris-*.pkg.tar.zst
+          snapclientmpris --help
+          python -c 'import snapclientmpris.snapclientmpris, snapclientmpris.mpris'
+          grep -x 'User=snapclient' /usr/lib/systemd/system/snapclientmpris.service
+
   release:
-    needs: [lint, deb, build]
+    needs: [lint, deb, arch, build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
